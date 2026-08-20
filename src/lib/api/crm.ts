@@ -852,6 +852,19 @@ export const crmApi = {
 
   getSale: (id: string) => authed<SaleDetail>(`/sales/${id}`),
 
+  /**
+   * Estado de cuenta en PDF · hallazgo `F1`.
+   *
+   * Pasa por `apiDownload` y no por un enlace directo al endpoint: la ruta exige
+   * sesión, y una navegación del navegador no lleva la cabecera `Authorization`
+   * —abrirla en una pestaña devolvía 401 sin decir por qué—.
+   */
+  saleStatement: async (id: string) => {
+    const token = await getIdToken();
+    if (!token) throw new Error("La sesión expiró. Volvé a iniciar sesión.");
+    return apiDownload(`/sales/${id}/estado-cuenta`, token);
+  },
+
   /** Crea UNA venta ligada a la versión aceptada (HU-VEN-02). */
   acceptQuote: (quoteId: string, input: { paymentDueDate?: string } = {}) =>
     authed<SaleWithConfirmation>(`/quotes/${quoteId}/accept`, {

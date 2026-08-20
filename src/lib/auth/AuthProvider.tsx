@@ -57,6 +57,18 @@ export function useSession(): AuthState {
 }
 
 /**
+ * Atributos comunes de la marca de sesión.
+ *
+ * `Secure` solo cuando la página ya va por HTTPS: en producción impide que la
+ * marca viaje en claro, y en `localhost` el navegador descartaría la cookie
+ * —dejando al middleware sin nada que leer y al usuario en un bucle de login—.
+ */
+function cookieFlags(): string {
+  const secure = location.protocol === "https:" ? "; Secure" : "";
+  return `path=/; SameSite=Lax${secure}`;
+}
+
+/**
  * Marca de sesión que lee el middleware.
  *
  * NO es una credencial: no contiene el token ni autoriza nada. Solo permite que
@@ -66,11 +78,11 @@ export function useSession(): AuthState {
  * porque la autorización real ocurre en el backend (HU-AUT-05).
  */
 function setSessionCookie(maxAgeMinutes: number): void {
-  document.cookie = `${SESSION_COOKIE}=1; path=/; max-age=${maxAgeMinutes * 60}; SameSite=Lax`;
+  document.cookie = `${SESSION_COOKIE}=1; ${cookieFlags()}; max-age=${maxAgeMinutes * 60}`;
 }
 
 function clearSessionCookie(): void {
-  document.cookie = `${SESSION_COOKIE}=; path=/; max-age=0; SameSite=Lax`;
+  document.cookie = `${SESSION_COOKIE}=; ${cookieFlags()}; max-age=0`;
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {

@@ -75,6 +75,7 @@ export function VentaView({ saleId }: { saleId: string }) {
   const [voiding, setVoiding] = useState<SalePayment | null>(null);
   const [voidingInvoice, setVoidingInvoice] = useState(false);
   const [resending, setResending] = useState(false);
+  const [downloadingStatement, setDownloadingStatement] = useState(false);
   const [team, setTeam] = useState<TeamMember[]>([]);
 
   const load = useCallback(async () => {
@@ -123,6 +124,39 @@ export function VentaView({ saleId }: { saleId: string }) {
       );
     } finally {
       setBusy(false);
+    }
+  }
+
+  /**
+   * Estado de cuenta en PDF · hallazgo `F1`.
+   *
+   * Antes era un enlace directo al endpoint abierto en otra pestaña. La ruta
+   * exige sesión y una navegación no lleva `Authorization`, así que devolvía 401
+   * en todos los entornos. Ahora se pide con el token y el blob se guarda desde
+   * el mismo origen, que es lo único que hace que `download` se respete.
+   */
+  async function downloadStatement() {
+    if (!sale) return;
+    setDownloadingStatement(true);
+    setActionError(null);
+    try {
+      const blob = await crmApi.saleStatement(sale.id);
+      const href = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = href;
+      anchor.download = `estado-cuenta-${sale.code}.pdf`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(href);
+    } catch (caught) {
+      setActionError(
+        caught instanceof ApiError
+          ? caught.message
+          : "No se pudo descargar el estado de cuenta.",
+      );
+    } finally {
+      setDownloadingStatement(false);
     }
   }
 
@@ -271,15 +305,15 @@ export function VentaView({ saleId }: { saleId: string }) {
             <Icon name="mail" />
             Reenviar confirmación
           </button>
-          <a
+          <button
+            type="button"
             className="btn ghost"
-            href={`${process.env.NEXT_PUBLIC_API_URL}/sales/${sale.id}/estado-cuenta`}
-            target="_blank"
-            rel="noreferrer"
+            disabled={busy || downloadingStatement}
+            onClick={() => void downloadStatement()}
           >
             <Icon name="doc" />
-            Estado de cuenta
-          </a>
+            {downloadingStatement ? "Generando…" : "Estado de cuenta"}
+          </button>
         </div>
       </div>
 
