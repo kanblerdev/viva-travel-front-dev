@@ -663,6 +663,10 @@ table.t .th-sort.is-active svg { opacity: 1; color: var(--orange); }
 }
 .ctx-duplicates a span { display: block; font-weight: 400; font-size: 11px; color: var(--text-mute); }
 .ctx-duplicates p { margin: 6px 0 0; color: var(--text-mute); font-size: 11px; line-height: 1.5; }
+/* Aviso de conexión con Meta: la bandeja se publica aunque no esté conectada. */
+.inbox-notice { margin-bottom: 12px; }
+.inbox-notice a { color: inherit; font-weight: 700; }
+.inbox.with-notice { height: calc(100vh - 220px); }
 /* Controles que solo existen en pantallas angostas. */
 .inbox-back, .inbox-ctx-toggle, .inbox-ctx-close { display: none; }
 

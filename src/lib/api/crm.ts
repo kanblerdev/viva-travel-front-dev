@@ -741,6 +741,19 @@ export type ConversationFilters = {
   pageSize?: number;
 };
 
+/**
+ * Por qué la bandeja puede estar vacía · visible para cualquier rol.
+ *
+ * `not_configured`: ninguna cuenta registrada en Integraciones. `pending`:
+ * registradas, sin verificar y sin eventos. `error`: todas fallaron al verificar.
+ * `connected`: alguna verificó su token o ya mandó mensajes.
+ */
+export type MessagingConnection = {
+  status: "not_configured" | "pending" | "error" | "connected";
+  channels: Channel[];
+  lastEventAt: string | null;
+};
+
 /** Solo conversaciones abiertas (HU-NAV-04). */
 export type ConversationCounts = {
   unassigned: number;
@@ -1110,6 +1123,8 @@ export const crmApi = {
     authed<Paginated<ConversationSummary>>(`/conversations${toQuery(filters)}`),
 
   conversationCounts: () => authed<ConversationCounts>("/conversations/counts"),
+
+  messagingConnection: () => authed<MessagingConnection>("/conversations/conexion"),
 
   getConversation: (id: string) => authed<ConversationDetail>(`/conversations/${id}`),
 

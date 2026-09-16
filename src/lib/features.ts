@@ -8,10 +8,11 @@
 /**
  * La bandeja en el menú · Sprint 6.
  *
- * Está construida y conectada al API, pero en producción no recibe nada hasta
- * que la app de Meta apunte su webhook al servidor. Mostrarla antes llevaría al
- * equipo a una bandeja vacía que parece rota. Se enciende en el entorno donde
- * Meta ya está conectado —o en desarrollo, con `npm run meta:simulate`—. La ruta
- * `/bandeja` responde igual por URL.
+ * Visible por defecto, también en producción y aunque Meta todavía no esté
+ * conectada (decisión del 16 de septiembre de 2026). Para que una bandeja vacía
+ * no parezca rota, la propia pantalla explica el estado de la conexión.
+ *
+ * `NEXT_PUBLIC_MESSAGING_ENABLED=false` la saca del menú si alguna vez hace falta
+ * esconderla. La ruta `/bandeja` responde igual por URL.
  */
-export const MESSAGING_ENABLED = process.env.NEXT_PUBLIC_MESSAGING_ENABLED === "true";
+export const MESSAGING_ENABLED = process.env.NEXT_PUBLIC_MESSAGING_ENABLED !== "false";
