@@ -267,6 +267,12 @@ function OpportunityCard({
           style={{ color: "inherit", textDecoration: "none" }}
         >
           {client.fullName}
+          {/* HU-CLI-10: el aviso donde se trabaja, no solo dentro del expediente. */}
+          {client.duplicateCount ? (
+            <span className="chip amber duplicate-chip" title="Otro expediente coincide por teléfono, correo o nombre">
+              Posible duplicado
+            </span>
+          ) : null}
         </Link>
 
         <div className="kcard-actions">

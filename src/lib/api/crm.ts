@@ -3,8 +3,13 @@
 import { getIdToken } from "@/lib/firebase/client";
 import { apiDownload, apiRequest, apiUpload, type Paginated } from "./client";
 import type {
+  Channel,
   ClientStatus,
   CommissionMode,
+  ConversationStatus,
+  DeliveryStatus,
+  MessageDirection,
+  MessageType,
   FileType,
   PaymentKind,
   PaymentStatus,
@@ -86,7 +91,23 @@ export type ClientSummary = {
   /** Próxima acción comprometida por el asesor. No dispara recordatorios. */
   nextFollowUpAt: string | null;
   updatedAt: string;
+  /**
+   * Posibles duplicados · HU-CLI-10. Solo lo trae el listado; en las demás
+   * respuestas no viaja y se lee como cero.
+   */
+  duplicateCount?: number;
 };
+
+/** Por qué se sugiere que dos expedientes son la misma persona. */
+export type DuplicateReason = "phone" | "email" | "name";
+
+export const DUPLICATE_REASON_LABEL: Record<DuplicateReason, string> = {
+  phone: "mismo teléfono",
+  email: "mismo correo",
+  name: "mismo nombre",
+};
+
+export type DuplicateMatch = { client: ClientSummary; reasons: DuplicateReason[] };
 
 export type ClientIdentity = {
   channel: "whatsapp" | "messenger" | "instagram";
@@ -632,6 +653,102 @@ export type DashboardSummary = {
   };
 };
 
+/* ─────────────────────────── Bandeja · Sprint 6 ───────────────────────────── */
+
+export type ConversationPerson = { id: string; fullName: string; initials: string };
+
+export type ConversationSummary = {
+  id: string;
+  channel: Channel;
+  status: ConversationStatus;
+  client: {
+    id: string;
+    fullName: string;
+    initials: string;
+    status: ClientStatus;
+    primaryPhone: string | null;
+    stage: { id: string; code: PipelineStageCode; name: string } | null;
+  } | null;
+  /** Quien atiende. `null` = sin asignar. */
+  advisor: ConversationPerson | null;
+  externalContactId: string;
+  lastMessagePreview: string | null;
+  lastMessageAt: string;
+  lastInboundAt: string | null;
+  lastOutboundAt: string | null;
+  /** Solo WhatsApp: hasta cuándo se puede responder sin plantilla (HU-MSG-12). */
+  whatsAppWindowExpiresAt: string | null;
+  unreadCount: number;
+  resolvedAt: string | null;
+  createdAt: string;
+};
+
+/** Panel de contexto del cliente · HU-MSG-13. Sin comisiones: es para conversar. */
+export type ConversationDetail = ConversationSummary & {
+  context: {
+    primaryEmail: string | null;
+    destinations: string[];
+    estimatedValue: string | null;
+    clientAdvisor: ConversationPerson | null;
+    latestQuote: {
+      id: string;
+      code: string;
+      status: QuoteStatus;
+      currentPrice: string | null;
+      validUntil: string | null;
+    } | null;
+    latestSale: {
+      id: string;
+      code: string;
+      saleStatus: SaleStatus;
+      destination: string;
+      balanceAmount: string;
+    } | null;
+    duplicates: DuplicateMatch[];
+  };
+};
+
+export type InboxMessage = {
+  id: string;
+  direction: MessageDirection;
+  messageType: MessageType;
+  text: string | null;
+  media: {
+    kind: "image" | "video" | "audio" | "sticker" | "document";
+    mimeType: string | null;
+    filename: string | null;
+    /** Messenger e Instagram: enlace que Meta manda y que caduca. */
+    temporaryUrl: string | null;
+  } | null;
+  deliveryStatus: DeliveryStatus;
+  failureReason: string | null;
+  /** Mandado desde Meta Business Suite o el celular, no desde el CRM. */
+  sentOutsideCrm: boolean;
+  sentBy: ConversationPerson | null;
+  occurredAt: string;
+};
+
+export type ConversationView = "unassigned" | "mine" | "all";
+
+export type ConversationFilters = {
+  view?: ConversationView;
+  channel?: Channel;
+  status?: ConversationStatus | "open";
+  advisorId?: string;
+  clientId?: string;
+  search?: string;
+  page?: number;
+  pageSize?: number;
+};
+
+/** Solo conversaciones abiertas (HU-NAV-04). */
+export type ConversationCounts = {
+  unassigned: number;
+  mine: number;
+  all: number;
+  unreadMine: number;
+};
+
 /* ─────────────────────────────── Transporte ───────────────────────────────── */
 
 async function authed<T>(
@@ -741,6 +858,25 @@ export const crmApi = {
    */
   claimClient: (id: string) =>
     authed<ClientSummary>(`/clients/${id}/claim`, { method: "PATCH" }),
+
+  /* ── Duplicados y fusión · HU-CLI-10 y HU-CLI-11 ─────────────────────────── */
+
+  /** Candidatos a ser la misma persona. Solo sugiere: nada se une solo. */
+  clientDuplicates: (id: string) => authed<DuplicateMatch[]>(`/clients/${id}/duplicados`),
+
+  /** Lo mismo para un alta que todavía no se guardó (`F2`). */
+  probeDuplicates: (input: { fullName?: string; primaryPhone?: string; primaryEmail?: string }) =>
+    authed<DuplicateMatch[]>(`/clients/posibles-duplicados${toQuery(input)}`),
+
+  /**
+   * Fusiona `sourceClientId` en `targetId`, que es el que queda. Solo Gerente y
+   * Administrador; no se deshace.
+   */
+  mergeClients: (targetId: string, sourceClientId: string) =>
+    authed<ClientDetail>(`/clients/${targetId}/fusionar`, {
+      method: "POST",
+      body: { sourceClientId },
+    }),
 
   /* ── Proveedores · HU-PRO-01 a HU-PRO-05 ─────────────────────────────────── */
 
@@ -967,6 +1103,45 @@ export const crmApi = {
 
   dashboard: (filters: { from?: string; to?: string; advisorId?: string } = {}) =>
     authed<DashboardSummary>(`/dashboard/summary${toQuery(filters)}`),
+
+  /* ── Bandeja · HU-MSG-02 a HU-MSG-13 ─────────────────────────────────────── */
+
+  listConversations: (filters: ConversationFilters = {}) =>
+    authed<Paginated<ConversationSummary>>(`/conversations${toQuery(filters)}`),
+
+  conversationCounts: () => authed<ConversationCounts>("/conversations/counts"),
+
+  getConversation: (id: string) => authed<ConversationDetail>(`/conversations/${id}`),
+
+  /** Página de mensajes anteriores al cursor, en orden cronológico. */
+  conversationMessages: (id: string, cursor?: { before: string; beforeId: string }) =>
+    authed<{ items: InboxMessage[]; hasMore: boolean }>(
+      `/conversations/${id}/messages${toQuery({ ...cursor })}`,
+    ),
+
+  /** A nombre de quien llama. 409 si otra persona la tomó antes. */
+  takeConversation: (id: string) =>
+    authed<ConversationSummary>(`/conversations/${id}/tomar`, { method: "POST" }),
+
+  transferConversation: (id: string, toUserId: string, note?: string) =>
+    authed<ConversationSummary>(`/conversations/${id}/transferir`, {
+      method: "POST",
+      body: { toUserId, note },
+    }),
+
+  /** Solo Gerente y Administrador. `null` la deja sin asignar. */
+  assignConversation: (id: string, advisorId: string | null) =>
+    authed<ConversationSummary>(`/conversations/${id}/asesor`, {
+      method: "PATCH",
+      body: { advisorId },
+    }),
+
+  resolveConversation: (id: string) =>
+    authed<ConversationSummary>(`/conversations/${id}/resolver`, { method: "POST" }),
+
+  /** Solo apaga el contador si quien llama la atiende. */
+  markConversationRead: (id: string) =>
+    authed<ConversationSummary>(`/conversations/${id}/leida`, { method: "POST" }),
 };
 
 /** Formato de moneda para montos que llegan como string desde Decimal128. */

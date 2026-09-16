@@ -536,7 +536,7 @@ table.t .th-sort.is-active svg { opacity: 1; color: var(--orange); }
   padding: 12px 14px; border-bottom: 1px solid var(--border-soft);
 }
 .inbox-item:hover { background: var(--bg-page); }
-.inbox-item[aria-selected="true"] { background: var(--orange-pale); box-shadow: inset 3px 0 0 var(--orange); }
+.inbox-item[aria-current="true"] { background: var(--orange-pale); box-shadow: inset 3px 0 0 var(--orange); }
 .inbox-item .av {
   width: 34px; height: 34px; border-radius: 50%; flex: none;
   background: linear-gradient(135deg,#A9B7D1,#5F76A0);
@@ -610,14 +610,79 @@ table.t .th-sort.is-active svg { opacity: 1; color: var(--orange); }
 .ctx .sect { font-size: 10px; font-weight: 700; letter-spacing: 0.12em; color: var(--text-faint); margin: 16px 0 6px; }
 .ctx .btn { width: 100%; justify-content: center; margin-top: 8px; }
 
+/* Bandeja conectada · Sprint 6 */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+.inbox-filters {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px;
+  padding: 10px 12px; border-bottom: 1px solid var(--border-soft);
+}
+.inbox-filters .input { padding: 7px 10px; font-size: 12px; }
+.inbox-empty {
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  padding: 32px 18px; text-align: center; font-size: 13px; line-height: 1.5;
+  color: var(--text-mute);
+}
+.inbox-item-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 6px; }
+.inbox-item-tags:empty { display: none; }
+.inbox-item-tags .chip { font-size: 10px; }
+.inbox-unread {
+  margin-left: auto; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px;
+  background: var(--orange); color: #fff; font-size: 10px; font-weight: 700;
+  display: inline-grid; place-items: center;
+}
+.thread-head { flex-wrap: wrap; }
+.thread-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.thread-title b { font-size: 14px; }
+.thread-sub { font-size: 11px; color: var(--text-mute); }
+.thread-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+.thread-alert { margin: 10px 14px 0; }
+.thread-system {
+  align-self: center; max-width: 80%; text-align: center;
+  font-size: 11px; color: var(--text-mute); font-style: italic;
+}
+.bubble-media {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  font-size: 12px; font-weight: 600; margin-bottom: 4px;
+}
+.bubble-media svg { width: 13px; height: 13px; flex: none; }
+.bubble-media a { color: inherit; text-decoration: underline; }
+.bubble-media-note { font-weight: 400; opacity: 0.75; }
+.ctx-link { color: var(--text); text-decoration: none; }
+.ctx-link:hover { color: var(--orange-deep); }
+.ctx-duplicates {
+  background: var(--amber-bg); color: var(--amber); border-radius: 10px;
+  padding: 10px 12px; font-size: 12px; margin-bottom: 6px;
+}
+.ctx-duplicates b { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.ctx-duplicates b svg { width: 13px; height: 13px; }
+.ctx-duplicates a {
+  display: block; color: var(--text); font-weight: 600; text-decoration: none; padding: 3px 0;
+}
+.ctx-duplicates a span { display: block; font-weight: 400; font-size: 11px; color: var(--text-mute); }
+.ctx-duplicates p { margin: 6px 0 0; color: var(--text-mute); font-size: 11px; line-height: 1.5; }
+/* Controles que solo existen en pantallas angostas. */
+.inbox-back, .inbox-ctx-toggle, .inbox-ctx-close { display: none; }
+
 @media (max-width: 1200px) {
   .inbox { grid-template-columns: 260px minmax(0, 1fr); }
   .inbox .ctx-panel { display: none; }
+  .inbox-ctx-toggle { display: inline-flex; }
+  .inbox-ctx-close { display: inline-flex; margin-bottom: 12px; }
+  /* El contexto ocupa el lugar del hilo en vez de apretar una tercera columna. */
+  .inbox[data-ctx="open"] .thread-panel { display: none; }
+  .inbox[data-ctx="open"] .ctx-panel { display: flex; }
 }
 @media (max-width: 900px) {
+  /* Lista O hilo: en un celular no entran los dos. */
   .inbox { grid-template-columns: minmax(0, 1fr); height: auto; }
-  .inbox .list-panel { max-height: 320px; }
-  .inbox .thread-panel { height: 70vh; }
+  .inbox .list-panel, .inbox .thread-panel, .inbox .ctx-panel { height: 75vh; }
+  .inbox[data-pane="thread"] .list-panel { display: none; }
+  .inbox[data-pane="list"] .thread-panel { display: none; }
+  .inbox-back { display: inline-grid; }
+  .thread-actions { margin-left: 0; width: 100%; }
 }
 
 /* Expediente 360° (wireframe 04) */
@@ -1403,4 +1468,47 @@ table.t .th-sort.is-active svg { opacity: 1; color: var(--orange); }
   font-size: 12.5px;
   color: var(--text-mute);
   line-height: 1.6;
+}
+
+/* ===== Duplicados y fusión · HU-CLI-10 y HU-CLI-11 (Sprint 6) ===== */
+.duplicate-chip { margin-left: 6px; font-size: 10px; vertical-align: middle; white-space: nowrap; }
+.duplicate-warning {
+  margin-top: 12px; padding: 10px 12px; border-radius: 10px;
+  background: var(--amber-bg); color: var(--amber); font-size: 12px;
+}
+.duplicate-warning b { display: flex; align-items: center; gap: 6px; }
+.duplicate-warning b svg { width: 13px; height: 13px; }
+.duplicate-warning ul { list-style: none; margin: 6px 0 0; padding: 0; }
+.duplicate-warning li { padding: 3px 0; }
+.duplicate-warning li a { color: var(--text); font-weight: 600; }
+.duplicate-warning li span { color: var(--text-mute); margin-left: 6px; }
+.duplicate-warning p { margin: 6px 0 0; color: var(--text-mute); }
+
+.duplicates-card { border-color: var(--amber); }
+.duplicates-card-head { display: flex; align-items: center; gap: 8px; color: var(--amber); margin-bottom: 10px; }
+.duplicates-card-head svg { width: 15px; height: 15px; }
+.duplicates-card ul { list-style: none; margin: 0; padding: 0; }
+.duplicates-card li {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 8px 0; border-top: 1px solid var(--border-soft);
+}
+.duplicates-card li a { color: var(--text); font-weight: 600; text-decoration: none; }
+.duplicates-card li span { display: block; font-size: 11px; color: var(--text-mute); }
+.duplicates-card p { margin: 8px 0 0; font-size: 12px; color: var(--text-mute); }
+
+.merge-choice { border: 0; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.merge-choice legend { margin-bottom: 8px; }
+.merge-option {
+  display: flex; gap: 10px; align-items: flex-start; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+}
+.merge-option[data-checked="true"] { border-color: var(--orange); background: var(--orange-pale); }
+.merge-option input { margin-top: 3px; }
+.merge-option b { display: block; font-size: 13px; }
+.merge-option small { display: block; font-size: 11px; color: var(--text-mute); margin-top: 2px; }
+.merge-confirm { display: flex; gap: 8px; align-items: center; font-size: 13px; font-weight: 600; margin-top: 14px; }
+.ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (max-width: 720px) {
+  .merge-choice { grid-template-columns: 1fr; }
 }

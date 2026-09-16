@@ -1,17 +1,21 @@
 "use client";
 
 import { useEffect, useState, type FormEvent } from "react";
+import Link from "next/link";
 import { Icon } from "@/components/Icon";
 import { Modal } from "@/components/Modal";
 import { ApiError } from "@/lib/api/client";
 import {
   crmApi,
+  DUPLICATE_REASON_LABEL,
   type ClientDetail,
   type ClientSummary,
+  type DuplicateMatch,
   type LossReason,
   type Tag,
   type TeamMember,
 } from "@/lib/api/crm";
+import { useDebouncedValue } from "@/lib/hooks/useDebouncedValue";
 import {
   SOURCE_CHANNELS,
   SOURCE_CHANNEL_LABEL,
@@ -347,6 +351,8 @@ export function NewProspectModal({
   // para no gastar un viaje al servidor en un error evitable.
   const hasContact = phone.trim() !== "" || email.trim() !== "";
 
+  const duplicates = useProbeDuplicates({ fullName, phone, email });
+
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     setSubmitting(true);
@@ -443,6 +449,8 @@ export function NewProspectModal({
             Indicá al menos un medio de contacto.
           </div>
         )}
+
+        <DuplicateWarning matches={duplicates} />
 
         <div className="modal-grid" style={{ marginTop: 14 }}>
           <div>
@@ -580,6 +588,219 @@ export function NewProspectModal({
             disabled={submitting || !hasContact || channel === ""}
           >
             {submitting ? "Creando…" : "Crear prospecto"}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+/* ──────────────────── Posibles duplicados en el alta · F2 ─────────────────── */
+
+/**
+ * Consulta posibles duplicados mientras se escribe el alta · HU-CLI-10.
+ *
+ * Con debounce, y solo cuando hay algo con qué comparar: un nombre de una sola
+ * palabra no alcanza (el backend tampoco lo usa) y un teléfono de menos de 7
+ * dígitos todavía se está escribiendo.
+ */
+function useProbeDuplicates(input: { fullName: string; phone: string; email: string }) {
+  // Se debouncea una cadena y no el objeto: un objeto nuevo en cada render nunca
+  // se "estabiliza", y la consulta se repetiría sin parar.
+  const key = useDebouncedValue(JSON.stringify(input), 400);
+  const [matches, setMatches] = useState<DuplicateMatch[]>([]);
+
+  useEffect(() => {
+    const probe = JSON.parse(key) as typeof input;
+    const fullName = probe.fullName.trim();
+    const phone = probe.phone.replace(/\D/g, "");
+    const email = probe.email.trim();
+
+    const params = {
+      fullName: fullName.split(/\s+/).length >= 2 ? fullName : undefined,
+      primaryPhone: phone.length >= 7 ? probe.phone.trim() : undefined,
+      primaryEmail: email.includes("@") ? email : undefined,
+    };
+    if (!params.fullName && !params.primaryPhone && !params.primaryEmail) {
+      setMatches([]);
+      return;
+    }
+
+    let cancelled = false;
+    crmApi
+      .probeDuplicates(params)
+      .then((result) => {
+        if (!cancelled) setMatches(result);
+      })
+      // El aviso ayuda, pero no puede bloquear el alta si la consulta falla.
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [key]);
+
+  return matches;
+}
+
+/**
+ * Aviso de que la persona ya podría estar cargada · `F2`.
+ *
+ * No bloquea: dos personas distintas pueden llamarse igual, y la fusión la
+ * decide un Gerente. Los enlaces abren en otra pestaña para no perder lo escrito.
+ */
+export function DuplicateWarning({ matches }: { matches: DuplicateMatch[] }) {
+  if (matches.length === 0) return null;
+
+  return (
+    <div className="duplicate-warning" role="status">
+      <b>
+        <Icon name="users" />
+        {matches.length === 1 ? "Puede que ya esté cargado" : "Puede que ya esté cargado más de una vez"}
+      </b>
+      <ul>
+        {matches.map((match) => (
+          <li key={match.client.id}>
+            <Link href={`/clientes/${match.client.id}`} target="_blank" rel="noreferrer">
+              {match.client.fullName}
+            </Link>
+            <span>
+              {match.reasons.map((reason) => DUPLICATE_REASON_LABEL[reason]).join(", ")}
+              {match.client.advisor ? ` · ${match.client.advisor.fullName}` : " · sin responsable"}
+            </span>
+          </li>
+        ))}
+      </ul>
+      <p>Revisalo antes de crear otro. Si es la misma persona, trabajá sobre ese expediente.</p>
+    </div>
+  );
+}
+
+/* ───────────────────── Fusionar expedientes · HU-CLI-11 ───────────────────── */
+
+/**
+ * Confirmación de la fusión · wireframe 13.
+ *
+ * Tres cosas que la persona tiene que decidir o saber ANTES de confirmar, porque
+ * la fusión no se deshace: cuál de los dos queda, qué se mueve, y que está
+ * afirmando que son la misma persona. Por eso la casilla es obligatoria: la regla
+ * transversal pide confirmación humana explícita, no un clic de paso.
+ */
+export function MergeClientsModal({
+  current,
+  candidate,
+  onClose,
+  onMerged,
+}: {
+  current: ClientSummary;
+  candidate: ClientSummary;
+  onClose: () => void;
+  /** Recibe el id del expediente que quedó. */
+  onMerged: (targetId: string) => void;
+}) {
+  const [keep, setKeep] = useState<"current" | "candidate">("current");
+  const [confirmed, setConfirmed] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const target = keep === "current" ? current : candidate;
+  const source = keep === "current" ? candidate : current;
+
+  async function handleSubmit(event: FormEvent) {
+    event.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      await crmApi.mergeClients(target.id, source.id);
+      onMerged(target.id);
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "No se pudo fusionar.");
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={
+        <>
+          <Icon name="users" style={{ color: "var(--orange)" }} />
+          Fusionar contactos
+        </>
+      }
+      onClose={onClose}
+      wide
+    >
+      <form onSubmit={handleSubmit}>
+        {error && (
+          <div className="auth-alert error" style={{ marginBottom: 14 }} role="alert">
+            <Icon name="target" />
+            <div>{error}</div>
+          </div>
+        )}
+
+        <fieldset className="merge-choice" disabled={submitting}>
+          <legend className="label">¿Cuál expediente queda?</legend>
+          {[
+            { value: "current" as const, client: current },
+            { value: "candidate" as const, client: candidate },
+          ].map((option) => (
+            <label key={option.value} className="merge-option" data-checked={keep === option.value}>
+              <input
+                type="radio"
+                name="keep"
+                value={option.value}
+                checked={keep === option.value}
+                onChange={() => setKeep(option.value)}
+              />
+              <span>
+                <b>{option.client.fullName}</b>
+                <small>
+                  {[option.client.primaryPhone, option.client.primaryEmail].filter(Boolean).join(" · ") ||
+                    "Sin teléfono ni correo"}
+                  {option.client.advisor ? ` · ${option.client.advisor.fullName}` : " · sin responsable"}
+                </small>
+              </span>
+            </label>
+          ))}
+        </fieldset>
+
+        <p className="modal-lead" style={{ marginTop: 14 }}>
+          Queda <b>{target.fullName}</b> y se absorbe <b>{source.fullName}</b>:
+        </p>
+        <ul className="consequences">
+          <li>
+            Las cotizaciones, ventas, archivos, correos y conversaciones de <b>{source.fullName}</b> pasan
+            a <b>{target.fullName}</b>, con todo su historial.
+          </li>
+          <li>
+            Se unen las identidades de WhatsApp, Messenger e Instagram, las etiquetas y los destinos.
+            Lo que <b>{target.fullName}</b> no tenía —teléfono, correo, responsable— se toma del otro.
+          </li>
+          <li>
+            <b>{target.fullName}</b> conserva su nombre, su etapa y su canal de origen. Las notas internas
+            de <b>{source.fullName}</b> se agregan al final, marcadas.
+          </li>
+          <li>
+            <b>{source.fullName}</b> no se borra: queda como fusionado, apuntando a este expediente.
+            <b> La fusión no se puede deshacer.</b>
+          </li>
+        </ul>
+
+        <label className="merge-confirm">
+          <input
+            type="checkbox"
+            checked={confirmed}
+            onChange={(event) => setConfirmed(event.target.checked)}
+            disabled={submitting}
+          />
+          Confirmo que son la misma persona.
+        </label>
+
+        <div className="modal-foot">
+          <button type="button" className="btn ghost" onClick={onClose} disabled={submitting}>
+            Cancelar
+          </button>
+          <button type="submit" className="btn danger" disabled={submitting || !confirmed}>
+            {submitting ? "Fusionando…" : "Fusionar"}
           </button>
         </div>
       </form>
