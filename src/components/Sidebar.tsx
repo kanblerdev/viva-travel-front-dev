@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
@@ -7,6 +8,9 @@ import { Icon, type IconName } from "./Icon";
 import { useSidebar } from "./AppShell";
 import { BACKOFFICE_URL } from "@/lib/session";
 import { useSession } from "@/lib/auth/AuthProvider";
+import { crmApi } from "@/lib/api/crm";
+import { MESSAGING_ENABLED } from "@/lib/features";
+import { usePolling } from "@/lib/hooks/usePolling";
 import type { UserRole } from "@/lib/domain/enums";
 import { USER_ROLE_LABEL } from "@/lib/domain/enums";
 
@@ -22,18 +26,6 @@ type NavItem = {
 };
 
 type NavGroup = { title: string; items: NavItem[] };
-
-/**
- * La mensajería se conecta en el Sprint 6 (HU-MSG-01 a HU-MSG-05).
- *
- * Hasta entonces `/bandeja` solo tiene datos de demostración para validar el
- * diseño con el cliente. Ofrecerla en el menú del CRM en producción llevaría al
- * equipo a trabajar conversaciones que no existen, así que la opción se oculta
- * — la ruta sigue accesible por URL para las sesiones de validación.
- *
- * Para publicarla, basta poner esto en `true`.
- */
-const MESSAGING_ENABLED = false;
 
 /**
  * Arquitectura de información del Levantamiento Funcional · 5.1
@@ -78,10 +70,25 @@ const NAV_GROUPS: NavGroup[] = [
   },
 ];
 
+/** Cada cuánto se refresca el contador de sin asignar del menú. */
+const UNASSIGNED_POLL_MS = 30_000;
+
 export function Sidebar() {
   const pathname = usePathname();
   const { open, close } = useSidebar();
   const { user, logout } = useSession();
+  const [unassigned, setUnassigned] = useState(0);
+
+  // HU-NAV-04: el número de conversaciones que nadie atiende. Un fallo no se
+  // muestra: el contador es un aviso, y el menú no puede romperse por él.
+  usePolling(
+    async () => {
+      const counts = await crmApi.conversationCounts().catch(() => null);
+      if (counts) setUnassigned(counts.unassigned);
+    },
+    UNASSIGNED_POLL_MS,
+    MESSAGING_ENABLED && Boolean(user),
+  );
 
   return (
     <aside className={`sidebar${open ? " open" : ""}`}>
@@ -133,7 +140,14 @@ export function Sidebar() {
                   >
                     <Icon name={item.icon} />
                     {item.label}
-                    {item.badge ? <span className="nav-badge">{item.badge}</span> : null}
+                    {(item.href === "/bandeja" ? unassigned : item.badge) ? (
+                      <span
+                        className="nav-badge"
+                        aria-label={item.href === "/bandeja" ? `${unassigned} sin asignar` : undefined}
+                      >
+                        {item.href === "/bandeja" ? unassigned : item.badge}
+                      </span>
+                    ) : null}
                   </Link>
                 );
               })}

@@ -10,6 +10,7 @@ import {
   type SetStateAction,
 } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Icon } from "@/components/Icon";
 import { EmailLinks, PhoneLinks } from "@/components/ContactLinks";
 import { SignedFileLink } from "@/components/SignedFileLink";
@@ -17,12 +18,15 @@ import { useSession, type SessionUser } from "@/lib/auth/AuthProvider";
 import { ApiError } from "@/lib/api/client";
 import {
   crmApi,
+  DUPLICATE_REASON_LABEL,
   formatAmount,
   formatMoney,
   isFollowUpOverdue,
   relativeTime,
   type ActivityEvent,
   type ClientDetail,
+  type ConversationSummary,
+  type DuplicateMatch,
   type PipelineStage,
   type QuoteSummary,
   type SaleSummary,
@@ -33,6 +37,7 @@ import {
 } from "@/lib/api/crm";
 import {
   CHANNEL_LABEL,
+  CONVERSATION_STATUS_LABEL,
   FILE_TYPE_LABEL,
   PIPELINE_STAGE_COLOR,
   PIPELINE_STAGE_LABEL,
@@ -44,7 +49,12 @@ import {
   QUOTE_STATUS_CHIP,
   type SourceChannel,
 } from "@/lib/domain/enums";
-import { MarkLostModal, RegistrarContactoModal, splitList } from "../modals";
+import {
+  MarkLostModal,
+  MergeClientsModal,
+  RegistrarContactoModal,
+  splitList,
+} from "../modals";
 import { NuevaVentaModal } from "../../ventas/modals";
 import { SALE_STATUS_CHIP } from "../../ventas/VentasView";
 
@@ -55,13 +65,13 @@ const CHANNEL_CLASS: Record<SourceChannel, string> = {
   other: "",
 };
 
-/** Pestañas del expediente. Las que aún no existen se anuncian, no se ocultan. */
+/** Pestañas del expediente. */
 const TABS = [
-  { id: "datos", label: "Datos generales", sprint: null },
-  { id: "cotizaciones", label: "Cotizaciones", sprint: null },
-  { id: "ventas", label: "Ventas", sprint: null },
-  { id: "conversaciones", label: "Conversaciones", sprint: "Sprint 6" },
-  { id: "archivos", label: "Archivos", sprint: null },
+  { id: "datos", label: "Datos generales" },
+  { id: "cotizaciones", label: "Cotizaciones" },
+  { id: "ventas", label: "Ventas" },
+  { id: "conversaciones", label: "Conversaciones" },
+  { id: "archivos", label: "Archivos" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -75,6 +85,9 @@ const ACTION_LABEL: Record<string, string> = {
   status_changed: "Cambio de estado",
   merged: "Expedientes fusionados",
 };
+
+/** Canal de una conversación → clase de color del chip. */
+const CONVERSATION_CHANNEL_CLASS = { whatsapp: "wa", messenger: "ms", instagram: "ig" } as const;
 
 /** Mismo formato que acepta el backend: monto en dólares, hasta dos decimales. */
 const MONEY_PATTERN = /^\d{1,10}(\.\d{1,2})?$/;
@@ -94,7 +107,10 @@ function canEditClient(user: SessionUser | null, client: ClientDetail): boolean 
 
 export function ExpedienteView({ clientId }: { clientId: string }) {
   const { user } = useSession();
+  const router = useRouter();
   const [client, setClient] = useState<ClientDetail | null>(null);
+  const [duplicates, setDuplicates] = useState<DuplicateMatch[]>([]);
+  const [merging, setMerging] = useState<DuplicateMatch | null>(null);
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
   const [stages, setStages] = useState<PipelineStage[]>([]);
   const [tags, setTags] = useState<Tag[]>([]);
@@ -122,6 +138,8 @@ export function ExpedienteView({ clientId }: { clientId: string }) {
       // Aparte y tolerante a fallos: sin el equipo se pierde el selector de
       // responsable, no el expediente entero.
       crmApi.team().then(setTeam).catch(() => undefined);
+      // HU-CLI-10: igual de accesorio. Sin la sugerencia el expediente sirve.
+      crmApi.clientDuplicates(clientId).then(setDuplicates).catch(() => setDuplicates([]));
     } catch (caught) {
       setError(
         caught instanceof ApiError && caught.status === 404
@@ -171,7 +189,9 @@ export function ExpedienteView({ clientId }: { clientId: string }) {
   }
 
   const stage = stages.find((s) => s.id === client.pipelineStageId);
-  const canEdit = canEditClient(user, client);
+  const merged = client.status === "merged";
+  // Un expediente fusionado es constancia: se trabaja sobre el destino.
+  const canEdit = !merged && canEditClient(user, client);
 
   return (
     <>
@@ -278,7 +298,22 @@ export function ExpedienteView({ clientId }: { clientId: string }) {
         </div>
       </div>
 
-      {!canEdit && (
+      {merged && (
+        <div className="auth-alert info" style={{ marginTop: 14 }} role="note">
+          <Icon name="users" />
+          <div>
+            Este expediente se fusionó con otro y quedó como constancia. Sus cotizaciones, ventas,
+            archivos y conversaciones están en el expediente destino.{" "}
+            {client.mergedIntoClientId && (
+              <Link href={`/clientes/${client.mergedIntoClientId}`} style={{ fontWeight: 700, color: "inherit" }}>
+                Ir al expediente destino
+              </Link>
+            )}
+          </div>
+        </div>
+      )}
+
+      {!merged && !canEdit && (
         <div
           className="card"
           style={{ marginTop: 14, padding: 14, display: "flex", gap: 10, alignItems: "center" }}
@@ -320,11 +355,19 @@ export function ExpedienteView({ clientId }: { clientId: string }) {
           ) : tab === "archivos" ? (
             <ArchivosTab clientId={client.id} canEdit={canEdit} />
           ) : (
-            <PendingTab tab={TABS.find((t) => t.id === tab)!} />
+            <ConversacionesTab clientId={client.id} />
           )}
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {!merged && duplicates.length > 0 && (
+            <DuplicadosCard
+              duplicates={duplicates}
+              canMerge={canReassign(user)}
+              onMerge={setMerging}
+            />
+          )}
+
           <ValorEstimadoCard client={client} canEdit={canEdit} onSave={saveSection} />
 
           <SeguimientoCard client={client} />
@@ -366,6 +409,20 @@ export function ExpedienteView({ clientId }: { clientId: string }) {
             // Se recarga el expediente entero: `markLost` devuelve el resumen y
             // acá hace falta el detalle, más la actividad que acaba de crecer.
             void load();
+          }}
+        />
+      )}
+
+      {merging && (
+        <MergeClientsModal
+          current={client}
+          candidate={merging.client}
+          onClose={() => setMerging(null)}
+          onMerged={(targetId) => {
+            setMerging(null);
+            // Si quedó el otro, este expediente pasó a ser constancia: se va al que quedó.
+            if (targetId === client.id) void load();
+            else router.push(`/clientes/${targetId}`);
           }}
         />
       )}
@@ -697,6 +754,8 @@ function AdvisorControl({
 
 /** Mantenimiento del registro, no cambios de negocio: no se muestran. */
 const INTERNAL_FIELDS = [
+  // Por dónde se asignó (tomar la conversación, reasignar): dato de auditoría.
+  "via",
   "_id",
   "__v",
   "createdAt",
@@ -719,6 +778,9 @@ const FIELD_LABEL: Record<string, string> = {
   identities: "Identidades",
   lostReason: "Motivo del descarte",
   assignedAdvisorId: "Responsable",
+  absorbed: "Absorbió a",
+  mergedInto: "Fusionado en",
+  moved: "Registros movidos",
   sourceChannel: "Canal de origen",
   status: "Estado",
 };
@@ -1807,18 +1869,150 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function PendingTab({ tab }: { tab: (typeof TABS)[number] }) {
+/* ─────────────────────── Posibles duplicados · HU-CLI-10 ──────────────────── */
+
+/**
+ * Candidatos a ser la misma persona, con el motivo de cada uno.
+ *
+ * Todos lo ven —quien carga o atiende tiene que saberlo—; fusionar es de Gerente
+ * y Administrador. Para el Asesor, la tarjeta le dice a quién pedírselo.
+ */
+function DuplicadosCard({
+  duplicates,
+  canMerge,
+  onMerge,
+}: {
+  duplicates: DuplicateMatch[];
+  canMerge: boolean;
+  onMerge: (match: DuplicateMatch) => void;
+}) {
   return (
-    <div className="card" style={{ padding: 48, textAlign: "center" }}>
-      <Icon
-        name="calendar"
-        width={28}
-        height={28}
-        style={{ color: "var(--text-faint)", marginBottom: 14 }}
-      />
-      <div style={{ fontWeight: 600, marginBottom: 6 }}>{tab.label}</div>
-      <div style={{ fontSize: 13, color: "var(--text-mute)" }}>
-        Este módulo se conecta en el <b>{tab.sprint}</b>.
+    <div className="card duplicates-card">
+      <div className="duplicates-card-head">
+        <Icon name="users" />
+        <b>Posibles duplicados</b>
+      </div>
+      <ul>
+        {duplicates.map((match) => (
+          <li key={match.client.id}>
+            <div style={{ minWidth: 0 }}>
+              <Link href={`/clientes/${match.client.id}`}>{match.client.fullName}</Link>
+              <span>
+                {match.reasons.map((reason) => DUPLICATE_REASON_LABEL[reason]).join(", ")}
+                {match.client.advisor ? ` · ${match.client.advisor.fullName}` : " · sin responsable"}
+              </span>
+            </div>
+            {canMerge && (
+              <button type="button" className="btn ghost tiny" onClick={() => onMerge(match)}>
+                Fusionar
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+      {!canMerge && (
+        <p>Si son la misma persona, pedile a un Gerente que los fusione.</p>
+      )}
+    </div>
+  );
+}
+
+/* ───────────────────── Conversaciones del expediente · HU-EXP-05 ──────────── */
+
+/**
+ * Las conversaciones de este cliente en los tres canales.
+ *
+ * El hilo se lee y se atiende en la bandeja: acá está el índice, con un enlace
+ * directo que abre la conversación ya seleccionada.
+ */
+function ConversacionesTab({ clientId }: { clientId: string }) {
+  const [conversations, setConversations] = useState<ConversationSummary[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    crmApi
+      .listConversations({ clientId, view: "all", pageSize: 100 })
+      .then((page) => setConversations(page.items))
+      .catch(() => setError("No se pudieron cargar las conversaciones."));
+  }, [clientId]);
+
+  if (error) {
+    return (
+      <div className="card" style={{ padding: 32, textAlign: "center", color: "var(--red)" }}>
+        {error}
+      </div>
+    );
+  }
+
+  if (conversations === null) {
+    return (
+      <div className="card" style={{ padding: 32, textAlign: "center", color: "var(--text-mute)" }}>
+        Cargando conversaciones…
+      </div>
+    );
+  }
+
+  if (conversations.length === 0) {
+    return (
+      <div className="card" style={{ padding: 40, textAlign: "center" }}>
+        <div style={{ fontWeight: 600, marginBottom: 6 }}>Sin conversaciones</div>
+        <div style={{ fontSize: 13, color: "var(--text-mute)" }}>
+          Este cliente todavía no escribió por WhatsApp, Messenger ni Instagram.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+      <div style={{ overflowX: "auto" }}>
+        <table className="t">
+          <thead>
+            <tr>
+              <th>Canal</th>
+              <th>Último mensaje</th>
+              <th>Atiende</th>
+              <th>Estado</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {conversations.map((conversation) => (
+              <tr key={conversation.id}>
+                <td>
+                  <span className={`chip ${CONVERSATION_CHANNEL_CLASS[conversation.channel]}`}>
+                    {CHANNEL_LABEL[conversation.channel]}
+                  </span>
+                </td>
+                <td style={{ maxWidth: 320 }}>
+                  <div className="ellipsis">{conversation.lastMessagePreview ?? "—"}</div>
+                  <time
+                    dateTime={conversation.lastMessageAt}
+                    style={{ fontSize: 11, color: "var(--text-mute)" }}
+                  >
+                    {relativeTime(conversation.lastMessageAt)}
+                  </time>
+                </td>
+                <td>
+                  {conversation.advisor?.fullName ?? <span className="chip amber">Sin asignar</span>}
+                </td>
+                <td>
+                  <span className={`chip ${conversation.status === "resolved" ? "green" : "navy"}`}>
+                    {CONVERSATION_STATUS_LABEL[conversation.status]}
+                  </span>
+                </td>
+                <td style={{ textAlign: "right" }}>
+                  <Link
+                    href={`/bandeja?vista=all&conversacion=${conversation.id}`}
+                    className="btn ghost tiny"
+                  >
+                    Abrir en la bandeja
+                  </Link>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );

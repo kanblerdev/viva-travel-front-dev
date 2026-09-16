@@ -469,6 +469,14 @@ function ClientTable({
                         >
                           {client.fullName}
                         </Link>
+                        {client.duplicateCount ? (
+                          <span
+                            className="chip amber duplicate-chip"
+                            title="Otro expediente coincide por teléfono, correo o nombre"
+                          >
+                            Posible duplicado
+                          </span>
+                        ) : null}
                         <div style={{ fontSize: 11, color: "var(--text-mute)" }}>
                           {client.primaryPhone ? (
                             <PhoneLinks phone={client.primaryPhone} />
