@@ -16,8 +16,10 @@ import {
   type ConversationSummary,
   type ConversationView,
   type InboxMessage,
+  type MessagingConnection,
   type TeamMember,
 } from "@/lib/api/crm";
+import { BACKOFFICE_URL } from "@/lib/session";
 import {
   CHANNEL_LABEL,
   CHANNELS,
@@ -61,6 +63,8 @@ const STATUS_FILTERS = ["open", "resolved"] as const;
  */
 const POLL_MS = 10_000;
 const PAGE_SIZE = 50;
+/** La conexión con Meta cambia muy de vez en cuando: basta con mirarla cada minuto. */
+const CONNECTION_POLL_MS = 60_000;
 
 /**
  * Bandeja de mensajería unificada · wireframe 06 · HU-MSG-02 a HU-MSG-13.
@@ -90,6 +94,18 @@ export function BandejaView() {
   const [listError, setListError] = useState<string | null>(null);
   const [showContext, setShowContext] = useState(false);
   const [team, setTeam] = useState<TeamMember[]>([]);
+  const [connection, setConnection] = useState<MessagingConnection | null>(null);
+
+  // Si falla, no se muestra ningún aviso: el aviso ayuda a leer la bandeja, y
+  // una bandeja que funciona no puede taparse por no poder explicarse.
+  usePolling(
+    async () => {
+      const next = await crmApi.messagingConnection().catch(() => null);
+      if (next) setConnection(next);
+    },
+    CONNECTION_POLL_MS,
+    Boolean(user),
+  );
 
   useEffect(() => {
     // Solo alimenta el filtro por asesor: si falla, el filtro no aparece.
@@ -168,151 +184,213 @@ export function BandejaView() {
     [loadList],
   );
 
+  const disconnected = Boolean(connection && connection.status !== "connected");
+
   return (
-    <div
-      className="inbox"
-      data-pane={selectedId ? "thread" : "list"}
-      data-ctx={showContext ? "open" : "closed"}
-    >
-      {/* Columna izquierda · lista de conversaciones */}
-      <div className="inbox-panel list-panel">
-        <div className="inbox-tabs" role="group" aria-label="Vista de la bandeja">
-          {VIEWS.map((v) => (
-            <button
-              key={v}
-              type="button"
-              aria-pressed={view === v}
-              onClick={() => setParams({ vista: v === "unassigned" ? null : v })}
-            >
-              {VIEW_LABEL[v]}
-              {counts ? ` · ${v === "unassigned" ? counts.unassigned : v === "mine" ? counts.mine : counts.all}` : ""}
-            </button>
-          ))}
-        </div>
-
-        <div className="inbox-filters">
-          <label className="sr-only" htmlFor="inboxSearch">
-            Buscar contacto
-          </label>
-          <input
-            id="inboxSearch"
-            className="input"
-            type="search"
-            placeholder="Nombre, teléfono o usuario…"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-          />
-          <label className="sr-only" htmlFor="inboxChannel">
-            Canal
-          </label>
-          <select
-            id="inboxChannel"
-            className="input"
-            value={channel ?? ""}
-            onChange={(event) => setParams({ canal: event.target.value || null })}
-          >
-            <option value="">Todos los canales</option>
-            {CHANNELS.map((c) => (
-              <option key={c} value={c}>
-                {CHANNEL_LABEL[c]}
-              </option>
-            ))}
-          </select>
-          {view === "all" && (
-            <>
-              <label className="sr-only" htmlFor="inboxStatus">
-                Estado
-              </label>
-              <select
-                id="inboxStatus"
-                className="input"
-                value={status ?? ""}
-                onChange={(event) => setParams({ estado: event.target.value || null })}
-              >
-                <option value="">Abiertas y resueltas</option>
-                <option value="open">Solo abiertas</option>
-                <option value="resolved">Solo resueltas</option>
-              </select>
-              <label className="sr-only" htmlFor="inboxAdvisor">
-                Asesor
-              </label>
-              <select
-                id="inboxAdvisor"
-                className="input"
-                value={advisorId ?? ""}
-                onChange={(event) => setParams({ asesor: event.target.value || null })}
-              >
-                <option value="">Cualquier asesor</option>
-                {team.map((member) => (
-                  <option key={member.id} value={member.id}>
-                    {member.fullName}
-                  </option>
-                ))}
-              </select>
-            </>
-          )}
-        </div>
-
-        <div className="inbox-list">
-          {listError && (
-            <div className="inbox-empty" role="alert">
-              <span style={{ color: "var(--red)" }}>{listError}</span>
-              <button type="button" className="btn ghost tiny" onClick={() => void loadList()}>
-                Reintentar
-              </button>
-            </div>
-          )}
-
-          {!list && !listError && <div className="inbox-empty">Cargando conversaciones…</div>}
-
-          {list?.items.map((conversation) => (
-            <ConversationRow
-              key={conversation.id}
-              conversation={conversation}
-              selected={conversation.id === selectedId}
-              user={user}
-              onSelect={() => select(conversation.id)}
-            />
-          ))}
-
-          {list && list.items.length === 0 && (
-            <div className="inbox-empty">
-              {emptyMessage(view, Boolean(debouncedSearch || channel || status || advisorId))}
-            </div>
-          )}
-
-          {list && list.items.length < list.total && (
-            <div style={{ padding: 12, textAlign: "center" }}>
+    <>
+      {connection && disconnected && (
+        <ConnectionNotice connection={connection} isAdmin={user?.role === "admin"} />
+      )}
+      <div
+        className={`inbox${disconnected ? " with-notice" : ""}`}
+        data-pane={selectedId ? "thread" : "list"}
+        data-ctx={showContext ? "open" : "closed"}
+      >
+        {/* Columna izquierda · lista de conversaciones */}
+        <div className="inbox-panel list-panel">
+          <div className="inbox-tabs" role="group" aria-label="Vista de la bandeja">
+            {VIEWS.map((v) => (
               <button
+                key={v}
                 type="button"
-                className="btn ghost tiny"
-                onClick={() => setLimit((current) => current + PAGE_SIZE)}
+                aria-pressed={view === v}
+                onClick={() => setParams({ vista: v === "unassigned" ? null : v })}
               >
-                Cargar más · quedan {list.total - list.items.length}
+                {VIEW_LABEL[v]}
+                {counts ? ` · ${v === "unassigned" ? counts.unassigned : v === "mine" ? counts.mine : counts.all}` : ""}
               </button>
-            </div>
-          )}
-        </div>
-      </div>
+            ))}
+          </div>
 
-      {selectedId ? (
-        <ConversationPanes
-          key={selectedId}
-          conversationId={selectedId}
-          user={user}
-          showContext={showContext}
-          onToggleContext={() => setShowContext((open) => !open)}
-          onBack={() => select(null)}
-          onChanged={handleChanged}
-        />
-      ) : (
-        <div className="inbox-panel thread-panel">
-          <div className="inbox-empty" style={{ margin: "auto" }}>
-            <Icon name="mail" width={28} height={28} style={{ color: "var(--text-faint)" }} />
-            Elegí una conversación de la lista para ver el hilo.
+          <div className="inbox-filters">
+            <label className="sr-only" htmlFor="inboxSearch">
+              Buscar contacto
+            </label>
+            <input
+              id="inboxSearch"
+              className="input"
+              type="search"
+              placeholder="Nombre, teléfono o usuario…"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
+            <label className="sr-only" htmlFor="inboxChannel">
+              Canal
+            </label>
+            <select
+              id="inboxChannel"
+              className="input"
+              value={channel ?? ""}
+              onChange={(event) => setParams({ canal: event.target.value || null })}
+            >
+              <option value="">Todos los canales</option>
+              {CHANNELS.map((c) => (
+                <option key={c} value={c}>
+                  {CHANNEL_LABEL[c]}
+                </option>
+              ))}
+            </select>
+            {view === "all" && (
+              <>
+                <label className="sr-only" htmlFor="inboxStatus">
+                  Estado
+                </label>
+                <select
+                  id="inboxStatus"
+                  className="input"
+                  value={status ?? ""}
+                  onChange={(event) => setParams({ estado: event.target.value || null })}
+                >
+                  <option value="">Abiertas y resueltas</option>
+                  <option value="open">Solo abiertas</option>
+                  <option value="resolved">Solo resueltas</option>
+                </select>
+                <label className="sr-only" htmlFor="inboxAdvisor">
+                  Asesor
+                </label>
+                <select
+                  id="inboxAdvisor"
+                  className="input"
+                  value={advisorId ?? ""}
+                  onChange={(event) => setParams({ asesor: event.target.value || null })}
+                >
+                  <option value="">Cualquier asesor</option>
+                  {team.map((member) => (
+                    <option key={member.id} value={member.id}>
+                      {member.fullName}
+                    </option>
+                  ))}
+                </select>
+              </>
+            )}
+          </div>
+
+          <div className="inbox-list">
+            {listError && (
+              <div className="inbox-empty" role="alert">
+                <span style={{ color: "var(--red)" }}>{listError}</span>
+                <button type="button" className="btn ghost tiny" onClick={() => void loadList()}>
+                  Reintentar
+                </button>
+              </div>
+            )}
+
+            {!list && !listError && <div className="inbox-empty">Cargando conversaciones…</div>}
+
+            {list?.items.map((conversation) => (
+              <ConversationRow
+                key={conversation.id}
+                conversation={conversation}
+                selected={conversation.id === selectedId}
+                user={user}
+                onSelect={() => select(conversation.id)}
+              />
+            ))}
+
+            {list && list.items.length === 0 && (
+              <div className="inbox-empty">
+                {emptyMessage(view, Boolean(debouncedSearch || channel || status || advisorId))}
+              </div>
+            )}
+
+            {list && list.items.length < list.total && (
+              <div style={{ padding: 12, textAlign: "center" }}>
+                <button
+                  type="button"
+                  className="btn ghost tiny"
+                  onClick={() => setLimit((current) => current + PAGE_SIZE)}
+                >
+                  Cargar más · quedan {list.total - list.items.length}
+                </button>
+              </div>
+            )}
           </div>
         </div>
-      )}
+
+        {selectedId ? (
+          <ConversationPanes
+            key={selectedId}
+            conversationId={selectedId}
+            user={user}
+            showContext={showContext}
+            onToggleContext={() => setShowContext((open) => !open)}
+            onBack={() => select(null)}
+            onChanged={handleChanged}
+          />
+        ) : (
+          <div className="inbox-panel thread-panel">
+            <div className="inbox-empty" style={{ margin: "auto" }}>
+              <Icon name="mail" width={28} height={28} style={{ color: "var(--text-faint)" }} />
+              Elegí una conversación de la lista para ver el hilo.
+            </div>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+const CONNECTION_COPY: Record<
+  Exclude<MessagingConnection["status"], "connected">,
+  { title: string; body: string; tone: "info" | "error" }
+> = {
+  not_configured: {
+    title: "La mensajería todavía no está conectada con Meta.",
+    body: "Cuando se registren las cuentas de WhatsApp, Messenger e Instagram, las conversaciones van a llegar acá solas. Mientras tanto la bandeja queda vacía.",
+    tone: "info",
+  },
+  pending: {
+    title: "Las cuentas de Meta están registradas pero todavía no llegó ningún mensaje.",
+    body: "Falta verificar la conexión o suscribir el webhook en la consola de Meta.",
+    tone: "info",
+  },
+  error: {
+    title: "La conexión con Meta está fallando.",
+    body: "La última verificación de las cuentas dio error, así que los mensajes nuevos podrían no estar llegando.",
+    tone: "error",
+  },
+};
+
+/**
+ * Por qué la bandeja está vacía · decisión del 16 sep 2026.
+ *
+ * La bandeja se publica aunque Meta no esté conectada. Sin este aviso, un equipo
+ * que la abre en su primera semana ve una pantalla vacía y concluye que el CRM no
+ * funciona. El Administrador recibe además el camino para arreglarlo.
+ */
+function ConnectionNotice({
+  connection,
+  isAdmin,
+}: {
+  connection: MessagingConnection;
+  isAdmin: boolean;
+}) {
+  if (connection.status === "connected") return null;
+  const copy = CONNECTION_COPY[connection.status];
+
+  return (
+    <div className={`auth-alert ${copy.tone} inbox-notice`} role="status">
+      <Icon name={copy.tone === "error" ? "target" : "globe"} />
+      <div>
+        <b>{copy.title}</b> {copy.body}{" "}
+        {isAdmin ? (
+          <a href={`${BACKOFFICE_URL}/integraciones`} target="_blank" rel="noreferrer">
+            Ir a Integraciones
+          </a>
+        ) : (
+          "Si tenés dudas, consultalo con el Administrador."
+        )}
+      </div>
     </div>
   );
 }
