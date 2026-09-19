@@ -1157,6 +1157,20 @@ export const crmApi = {
   /** Solo apaga el contador si quien llama la atiende. */
   markConversationRead: (id: string) =>
     authed<ConversationSummary>(`/conversations/${id}/leida`, { method: "POST" }),
+
+  /**
+   * Responder por el canal del hilo · HU-MSG-10.
+   *
+   * Devuelve el mensaje ya guardado. Ojo: un 201 NO garantiza que el cliente lo
+   * haya recibido —puede volver con `deliveryStatus: "failed"` y su motivo—,
+   * porque un rechazo de Meta es parte del historial y no un error de la
+   * petición. Fuera de la ventana de 24 h responde 409 (HU-MSG-12).
+   */
+  sendConversationMessage: (id: string, text: string) =>
+    authed<InboxMessage>(`/conversations/${id}/messages`, {
+      method: "POST",
+      body: { text },
+    }),
 };
 
 /** Formato de moneda para montos que llegan como string desde Decimal128. */
