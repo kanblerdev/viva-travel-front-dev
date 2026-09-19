@@ -1186,7 +1186,11 @@ table.t .th-sort.is-active svg { opacity: 1; color: var(--orange); }
 }
 
 @media (max-width: 1024px) {
-  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* `.stats.five` (0,2,0) le gana en especificidad a `.stats` (0,1,0) aunque esta
+     regla venga después, así que el quinto indicador hay que bajarlo aquí por su
+     nombre: si no, las cinco columnas se mantienen en móvil y desbordan la página. */
+  .stats,
+  .stats.five { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .pagebody-split-360,
   .pagebody-split-380,
   .pagebody-split-420 {
@@ -1254,7 +1258,8 @@ table.t .th-sort.is-active svg { opacity: 1; color: var(--orange); }
 }
 
 @media (max-width: 600px) {
-  .stats { grid-template-columns: 1fr; }
+  .stats,
+  .stats.five { grid-template-columns: 1fr; }
   .topbar { padding: 0 12px; }
   .topbar .topbar-bell { display: none; }
   .page-h { gap: 12px; }
