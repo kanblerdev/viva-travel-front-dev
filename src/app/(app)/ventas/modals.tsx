@@ -1081,7 +1081,7 @@ export function AnularAbonoModal({
           <li>
             Deja de sumar al cobro: el saldo pasa de{" "}
             <b className="num">{formatAmount(sale.balanceAmount)}</b> a{" "}
-            <b className="num">${balanceAfter}</b>.
+            <b className="num">{formatAmount(balanceAfter)}</b>.
           </li>
           <li>
             Si con esto la venta deja de estar saldada, vuelve a{" "}
