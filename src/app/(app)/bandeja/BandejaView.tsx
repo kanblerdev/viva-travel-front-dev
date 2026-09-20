@@ -687,7 +687,10 @@ function ConversationPanes({
           )}
         </div>
 
-        <Composer conversation={detail} />
+        <Composer
+          conversation={detail}
+          onSent={(message) => setMessages((current) => mergeMessages(current, [message]))}
+        />
       </div>
 
       <div className="inbox-panel ctx-panel">
@@ -822,11 +825,50 @@ function MessageBubble({ message }: { message: InboxMessage }) {
 /**
  * Cuadro de respuesta · HU-MSG-10 y HU-MSG-12.
  *
- * La ventana de 24 h ya se calcula con el dato real. El envío se habilita en el
- * Sprint 7; hasta entonces el cuadro lo dice en vez de aparentar que funciona.
+ * El envío NO es optimista a propósito. El mensaje aparece en el hilo cuando el
+ * backend confirma que lo guardó, porque el resultado que importa —enviado,
+ * entregado o fallido— solo lo sabe él. Pintarlo antes obligaría a despintarlo
+ * ante un rechazo de Meta, y un mensaje que se borra solo es peor que uno que
+ * tarda medio segundo en aparecer.
+ *
+ * Un 201 con `failed` NO es un error de la petición: el mensaje entra al hilo
+ * con su motivo a la vista. Solo la ventana cerrada (409) se muestra como aviso.
  */
-function Composer({ conversation }: { conversation: ConversationDetail }) {
+function Composer({
+  conversation,
+  onSent,
+}: {
+  conversation: ConversationDetail;
+  onSent: (message: InboxMessage) => void;
+}) {
   const replyWindow = useMemo(() => windowState(conversation), [conversation]);
+  const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const canSend = replyWindow.open && text.trim().length > 0 && !sending;
+
+  async function send() {
+    if (!canSend) return;
+    setSending(true);
+    setError(null);
+    try {
+      const message = await crmApi.sendConversationMessage(conversation.id, text.trim());
+      setText("");
+      onSent(message);
+      if (message.deliveryStatus === "failed") {
+        setError(message.failureReason ?? "Meta rechazó el envío.");
+      }
+    } catch (caught) {
+      setError(
+        caught instanceof ApiError
+          ? caught.message
+          : "No se pudo enviar. Revisá la conexión y probá de nuevo.",
+      );
+    } finally {
+      setSending(false);
+    }
+  }
 
   return (
     <div className="composer">
@@ -854,9 +896,40 @@ function Composer({ conversation }: { conversation: ConversationDetail }) {
         )}
       </div>
 
+      {error && (
+        <div className="composer-error" role="alert">
+          <Icon name="target" width={12} height={12} />
+          <span>{error}</span>
+        </div>
+      )}
+
       <div className="row">
-        <input placeholder="El envío desde el CRM todavía no está habilitado" disabled aria-label="Mensaje" />
-        <button type="button" className="send" aria-label="Enviar" disabled>
+        <input
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+          onKeyDown={(event) => {
+            // Enter manda; Shift+Enter se reserva para cuando el campo crezca.
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              void send();
+            }
+          }}
+          disabled={!replyWindow.open || sending}
+          maxLength={4096}
+          placeholder={
+            replyWindow.open
+              ? "Escribí tu respuesta…"
+              : "Ventana cerrada · hace falta una plantilla aprobada"
+          }
+          aria-label="Mensaje"
+        />
+        <button
+          type="button"
+          className={sending ? "send is-sending" : "send"}
+          aria-label={sending ? "Enviando" : "Enviar"}
+          onClick={() => void send()}
+          disabled={!canSend}
+        >
           <Icon name="arrow-right" />
         </button>
       </div>

@@ -595,6 +595,25 @@ table.t .th-sort.is-active svg { opacity: 1; color: var(--orange); }
   display: grid; place-items: center;
 }
 .composer .send:disabled { background: var(--border); cursor: not-allowed; }
+/* Mientras el envío está en vuelo. El botón queda deshabilitado, así que sin
+   esto no se distingue de "no hay nada escrito". */
+.composer .send.is-sending { background: var(--orange); opacity: .55; }
+.composer .send.is-sending svg { animation: send-pulse 900ms ease-in-out infinite; }
+@keyframes send-pulse { 0%,100% { transform: translateX(0); } 50% { transform: translateX(3px); } }
+@media (prefers-reduced-motion: reduce) {
+  .composer .send.is-sending svg { animation: none; }
+}
+
+/* Rechazo de Meta o de la regla de ventana: se dice arriba del campo, donde
+   está la mirada al pulsar enviar, y no como aviso flotante que tapa el hilo. */
+.composer-error {
+  display: flex; align-items: flex-start; gap: 7px;
+  margin-bottom: 9px; padding: 8px 10px;
+  border: 1px solid var(--red-soft, #F3C9C4); border-radius: 8px;
+  background: var(--red-bg, #FDF3F2);
+  font-size: 12px; font-weight: 500; color: var(--red);
+}
+.composer-error svg { flex: none; margin-top: 2px; }
 
 .ctx { padding: 18px 16px; overflow-y: auto; }
 .ctx .who { text-align: center; margin-bottom: 18px; }
