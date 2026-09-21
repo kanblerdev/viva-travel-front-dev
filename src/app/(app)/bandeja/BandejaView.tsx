@@ -777,6 +777,7 @@ const DELIVERY_MARK: Partial<Record<InboxMessage["deliveryStatus"], string>> = {
   sent: " ✓",
   delivered: " ✓✓",
   read: " ✓✓",
+  queued: " · enviando…",
 };
 
 function MessageBubble({ message }: { message: InboxMessage }) {
@@ -789,8 +790,19 @@ function MessageBubble({ message }: { message: InboxMessage }) {
     minute: "2-digit",
   });
 
+  /*
+   * Un saliente que NO salió se marca en la burbuja, no solo en el aviso del
+   * cuadro de respuesta: ese aviso se va con la siguiente pulsación y el
+   * mensaje se queda en el hilo idéntico a uno entregado. El asesor creería
+   * que el cliente lo recibió, que es justo lo que no puede pasar en un hilo
+   * de atención.
+   */
+  const failed = message.direction === "outbound" && message.deliveryStatus === "failed";
+
   return (
-    <div className={`bubble ${message.direction === "inbound" ? "in" : "out"}`}>
+    <div
+      className={`bubble ${message.direction === "inbound" ? "in" : "out"}${failed ? " failed" : ""}`}
+    >
       {message.media && (
         <div className="bubble-media">
           <Icon name={message.media.kind === "document" ? "paperclip" : "image"} />
@@ -810,6 +822,12 @@ function MessageBubble({ message }: { message: InboxMessage }) {
         </div>
       )}
       {message.text && <span style={{ whiteSpace: "pre-wrap" }}>{message.text}</span>}
+      {failed && (
+        <span className="bubble-failed">
+          <Icon name="target" width={11} height={11} />
+          <span>No se envió{message.failureReason ? `: ${message.failureReason}` : "."}</span>
+        </span>
+      )}
       <time className="meta" dateTime={message.occurredAt} title={absolute(message.occurredAt)}>
         {time}
         {message.direction === "outbound" && (DELIVERY_MARK[message.deliveryStatus] ?? "")}

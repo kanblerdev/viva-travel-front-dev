@@ -615,6 +615,20 @@ table.t .th-sort.is-active svg { opacity: 1; color: var(--orange); }
 }
 .composer-error svg { flex: none; margin-top: 2px; }
 
+/* Saliente que no salió. Se despinta del azul de "enviado" para que no se
+   confunda de un vistazo, y dice por qué debajo del texto. */
+.bubble.out.failed {
+  background: var(--red-bg, #FDF3F2);
+  border: 1px solid var(--red-soft, #F3C9C4);
+  color: var(--text);
+}
+.bubble.out.failed .meta { color: var(--text-mute); }
+.bubble-failed {
+  display: flex; align-items: flex-start; gap: 5px;
+  margin-top: 6px; font-size: 11px; font-weight: 600; color: var(--red);
+}
+.bubble-failed svg { flex: none; margin-top: 2px; }
+
 .ctx { padding: 18px 16px; overflow-y: auto; }
 .ctx .who { text-align: center; margin-bottom: 18px; }
 .ctx .who .av {
