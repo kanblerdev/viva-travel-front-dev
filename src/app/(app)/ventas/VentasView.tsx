@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Icon } from "@/components/Icon";
+import { EmptyState, ErrorCard, LoadingCard } from "@/components/StateCards";
+import { TabPanel, Tabs, type TabOption } from "@/components/Tabs";
 import { ApiError } from "@/lib/api/client";
 import { useDebouncedValue } from "@/lib/hooks/useDebouncedValue";
 import {
@@ -17,23 +19,16 @@ import {
   type TeamMember,
 } from "@/lib/api/crm";
 import {
-  PAYMENT_STATUS_LABEL,
   PAYMENT_STATUSES,
-  SALE_STATUS_LABEL,
+  PAYMENT_STATUS_LABEL,
   SALE_STATUSES,
+  SALE_STATUS_CHIP,
+  SALE_STATUS_LABEL,
   type PaymentStatus,
   type SaleStatus,
 } from "@/lib/domain/enums";
-import { NuevaVentaModal } from "./modals";
+import { NuevaVentaModal } from "@/components/NuevaVentaModal";
 import { AgendaCobro } from "./AgendaCobro";
-
-export const SALE_STATUS_CHIP: Record<SaleStatus, string> = {
-  reserved: "amber",
-  paid: "blue",
-  in_progress: "purple",
-  completed: "green",
-  canceled: "red",
-};
 
 const PAGE_SIZE = 50;
 
@@ -52,6 +47,12 @@ type UrlFilters = Omit<SaleFilters, "page" | "pageSize">;
  * duplicaría los filtros.
  */
 type View = "listado" | "agenda";
+
+/** Las dos vistas de Ventas: el listado y la agenda de cobro. */
+const VIEW_TABS: readonly TabOption<View>[] = [
+  { id: "listado", label: "Listado", icon: "doc" },
+  { id: "agenda", label: "Agenda de cobro", icon: "phone" },
+];
 
 function formatDate(iso: string | null): string {
   if (!iso) return "—";
@@ -373,24 +374,14 @@ export function VentasView() {
       )}
 
       <div className="filterbar">
-        <div className="viewtabs" style={{ marginRight: 4 }}>
-          <button
-            type="button"
-            aria-pressed={view === "listado"}
-            onClick={() => applyFilters(filters, "listado")}
-          >
-            <Icon name="doc" />
-            Listado
-          </button>
-          <button
-            type="button"
-            aria-pressed={view === "agenda"}
-            onClick={() => applyFilters(filters, "agenda")}
-          >
-            <Icon name="phone" />
-            Agenda de cobro
-          </button>
-        </div>
+        <Tabs
+          options={VIEW_TABS}
+          value={view}
+          onChange={(next) => applyFilters(filters, next)}
+          label="Vista de ventas"
+          idPrefix="ventas"
+          style={{ marginRight: 4 }}
+        />
 
         <input
           className="selectfilter"
@@ -480,41 +471,37 @@ export function VentasView() {
       </div>
 
       {error ? (
-        <div className="card" style={{ padding: 48, textAlign: "center" }}>
-          <div style={{ color: "var(--red)", fontWeight: 600, marginBottom: 10 }}>{error}</div>
-          <button className="btn ghost" onClick={() => void load()}>
-            Reintentar
-          </button>
-        </div>
+        <ErrorCard message={error} onRetry={() => void load()} />
       ) : sales === null ? (
-        <div className="card" style={{ padding: 48, textAlign: "center", color: "var(--text-mute)" }}>
-          Cargando ventas…
-        </div>
+        <LoadingCard>Cargando ventas…</LoadingCard>
       ) : sales.length === 0 ? (
-        <div className="card" style={{ padding: 48, textAlign: "center" }}>
-          <div style={{ fontWeight: 600, marginBottom: 6 }}>
-            {hasFilters ? "Sin coincidencias" : "Todavía no hay ventas"}
-          </div>
-          <div style={{ fontSize: 13, color: "var(--text-mute)", marginBottom: 18 }}>
-            {hasFilters
+        <EmptyState
+          icon="cart"
+          title={hasFilters ? "Sin coincidencias" : "Todavía no hay ventas"}
+          hint={
+            hasFilters
               ? "Ajustá o limpiá los filtros para ver todas."
-              : "Una venta nace al aceptar una cotización, o se registra directo desde acá."}
-          </div>
-          {hasFilters ? (
-            <button className="btn ghost" onClick={clearFilters}>
-              Limpiar filtros
-            </button>
-          ) : (
-            <Link href="/cotizaciones" className="btn ghost">
-              <Icon name="doc" />
-              Ver cotizaciones
-            </Link>
-          )}
-        </div>
+              : "Una venta nace al aceptar una cotización, o se registra directo desde acá."
+          }
+          action={
+            hasFilters ? (
+              <button type="button" className="btn ghost" onClick={clearFilters}>
+                Limpiar filtros
+              </button>
+            ) : (
+              <Link href="/cotizaciones" className="btn ghost">
+                <Icon name="doc" />
+                Ver cotizaciones
+              </Link>
+            )
+          }
+        />
       ) : view === "agenda" ? (
-        <AgendaCobro sales={sales} onLogged={() => void load()} />
+        <TabPanel id="agenda" idPrefix="ventas">
+          <AgendaCobro sales={sales} onLogged={() => void load()} />
+        </TabPanel>
       ) : (
-        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+        <TabPanel id="listado" idPrefix="ventas" className="card" style={{ padding: 0, overflow: "hidden" }}>
           <div style={{ overflowX: "auto" }}>
             <table className="t cards">
               <thead>
@@ -593,7 +580,7 @@ export function VentasView() {
               </tbody>
             </table>
           </div>
-        </div>
+        </TabPanel>
       )}
 
       {/* Paginación real · hallazgo `A1`: antes se pedían 200 de una sola vez y

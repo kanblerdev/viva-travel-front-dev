@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useRef, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { Icon } from "@/components/Icon";
 
 /** Elementos que pueden recibir el foco dentro del diálogo. */
@@ -31,14 +31,54 @@ export function Modal({
   children,
   /** Ancho máximo, para los diálogos que muestran más que un formulario corto. */
   wide,
+  /**
+   * Fuerza —o desactiva— el aviso de cambios sin guardar.
+   *
+   * Por defecto el diálogo lo decide solo (ver abajo). Esto existe para los
+   * casos que el diálogo no puede ver: un editor que guarda en un estado
+   * externo, o un diálogo de solo lectura donde preguntar sobraría.
+   */
+  hasUnsavedChanges,
 }: {
   title: ReactNode;
   onClose: () => void;
   children: ReactNode;
   wide?: boolean;
+  hasUnsavedChanges?: boolean;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
+  const [confirmingDiscard, setConfirmingDiscard] = useState(false);
+
+  /*
+   * ¿Hay algo escrito que se perdería al cerrar? · `E1`
+   *
+   * Cerrar un diálogo es fácil de hacer sin querer —Escape, un clic fuera, la
+   * X— y con un formulario a medio llenar eso borra minutos de trabajo sin
+   * preguntar.
+   *
+   * Se detecta escuchando los eventos `input` y `change` NATIVOS del diálogo,
+   * en vez de pedirle la respuesta a cada uno de los veintiún diálogos del CRM.
+   * La clave es que un `setState` de React que cambia el valor de un campo
+   * controlado NO dispara un evento nativo: solo lo dispara una persona
+   * escribiendo o eligiendo. Así no hay falsos positivos por un `select` que se
+   * completa solo cuando llega su catálogo, que es justo lo que arruinaría la
+   * idea.
+   *
+   * En una `ref` y no en el estado: el efecto monta la trampa de foco una sola
+   * vez, y volver a montarla al primer tecleo devolvería el foco al primer
+   * campo a media palabra.
+   *
+   * El botón **Cancelar** de cada diálogo NO pregunta, a propósito: cancelar es
+   * decir "descartá esto", y volver a preguntarlo sería ruido. El aviso es para
+   * las tres formas de cerrar sin querer.
+   */
+  const dirtyRef = useRef(false);
+
+  const requestClose = useCallback(() => {
+    if (hasUnsavedChanges ?? dirtyRef.current) setConfirmingDiscard(true);
+    else onClose();
+  }, [hasUnsavedChanges, onClose]);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -60,7 +100,7 @@ export function Modal({
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
         event.stopPropagation();
-        onClose();
+        requestClose();
         return;
       }
 
@@ -87,19 +127,27 @@ export function Modal({
       }
     }
 
+    const markDirty = () => {
+      dirtyRef.current = true;
+    };
+    dialog?.addEventListener("input", markDirty);
+    dialog?.addEventListener("change", markDirty);
+
     document.addEventListener("keydown", onKeyDown, true);
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
 
     return () => {
+      dialog?.removeEventListener("input", markDirty);
+      dialog?.removeEventListener("change", markDirty);
       document.removeEventListener("keydown", onKeyDown, true);
       document.body.style.overflow = previousOverflow;
       opener?.focus?.();
     };
-  }, [onClose]);
+  }, [requestClose]);
 
   return (
-    <div className="modal-backdrop" onMouseDown={onClose}>
+    <div className="modal-backdrop" onMouseDown={requestClose}>
       <div
         ref={dialogRef}
         className="modal"
@@ -114,10 +162,29 @@ export function Modal({
       >
         <div className="modal-head">
           <h2 id={titleId}>{title}</h2>
-          <button type="button" className="iconbtn" onClick={onClose} aria-label="Cerrar">
+          <button type="button" className="iconbtn" onClick={requestClose} aria-label="Cerrar">
             <Icon name="x" />
           </button>
         </div>
+
+        {confirmingDiscard && (
+          <div className="modal-discard" role="alert">
+            <b>Hay cambios sin guardar.</b> Si cerrás ahora se pierden.
+            <div>
+              <button type="button" className="btn danger tiny" onClick={onClose}>
+                Descartar cambios
+              </button>
+              <button
+                type="button"
+                className="btn ghost tiny"
+                onClick={() => setConfirmingDiscard(false)}
+              >
+                Seguir editando
+              </button>
+            </div>
+          </div>
+        )}
+
         {children}
       </div>
     </div>

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Icon } from "@/components/Icon";
+import { EmptyState, ErrorCard, LoadingCard } from "@/components/StateCards";
 import { useSession } from "@/lib/auth/AuthProvider";
 import { ApiError } from "@/lib/api/client";
 import { crmApi, type Supplier, type SupplierFilters } from "@/lib/api/crm";
@@ -186,43 +187,38 @@ export function ProveedoresView() {
       )}
 
       {error ? (
-        <div className="card" style={{ padding: 48, textAlign: "center" }}>
-          <div style={{ color: "var(--red)", fontWeight: 600, marginBottom: 10 }}>{error}</div>
-          <button className="btn ghost" onClick={() => void load()}>
-            Reintentar
-          </button>
-        </div>
+        <ErrorCard message={error} onRetry={() => void load()} />
       ) : suppliers === null ? (
-        <div className="card" style={{ padding: 48, textAlign: "center", color: "var(--text-mute)" }}>
-          Cargando proveedores…
-        </div>
+        <LoadingCard>Cargando proveedores…</LoadingCard>
       ) : suppliers.length === 0 ? (
-        <div className="card" style={{ padding: 48, textAlign: "center" }}>
-          <div style={{ fontWeight: 600, marginBottom: 6 }}>
-            {hasFilters ? "Sin coincidencias" : "Todavía no hay proveedores"}
-          </div>
-          <div style={{ fontSize: 13, color: "var(--text-mute)", marginBottom: 18 }}>
-            {hasFilters
+        <EmptyState
+          icon="truck"
+          title={hasFilters ? "Sin coincidencias" : "Todavía no hay proveedores"}
+          hint={
+            hasFilters
               ? "Ajustá o limpiá los filtros para ver el catálogo completo."
-              : "Registrá las agencias mayoristas y los proveedores de servicios con los que trabajás."}
-          </div>
-          {hasFilters ? (
-            <button className="btn ghost" onClick={() => setFilters({})}>
-              Limpiar filtros
-            </button>
-          ) : (
-            <button
-              className="btn primary"
-              onClick={() => {
-                setFormTarget(null);
-                setShowForm(true);
-              }}
-            >
-              <Icon name="plus" />
-              Nuevo proveedor
-            </button>
-          )}
-        </div>
+              : "Registrá las agencias mayoristas y los proveedores de servicios con los que trabajás."
+          }
+          action={
+            hasFilters ? (
+              <button type="button" className="btn ghost" onClick={() => setFilters({})}>
+                Limpiar filtros
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn primary"
+                onClick={() => {
+                  setFormTarget(null);
+                  setShowForm(true);
+                }}
+              >
+                <Icon name="plus" />
+                Nuevo proveedor
+              </button>
+            )
+          }
+        />
       ) : (
         <div
           style={{

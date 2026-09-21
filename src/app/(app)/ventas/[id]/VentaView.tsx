@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Icon } from "@/components/Icon";
+import { RelativeTime } from "@/components/RelativeTime";
 import { SignedFileLink } from "@/components/SignedFileLink";
 import { useSession } from "@/lib/auth/AuthProvider";
 import { ApiError } from "@/lib/api/client";
@@ -12,17 +13,17 @@ import {
   formatAmount,
   formatMoney,
   paidPercentage,
-  relativeTime,
   type SaleDetail,
   type SaleActivity,
   type SalePayment,
   type TeamMember,
 } from "@/lib/api/crm";
 import {
-  manualSaleTransitions,
   PAYMENT_STATUS_LABEL,
   QUOTE_TYPE_LABEL,
+  SALE_STATUS_CHIP,
   SALE_STATUS_LABEL,
+  manualSaleTransitions,
   type PaymentKind,
 } from "@/lib/domain/enums";
 import {
@@ -34,7 +35,6 @@ import {
   ReasignarVentaModal,
   RegistrarPagoModal,
 } from "../modals";
-import { SALE_STATUS_CHIP } from "../VentasView";
 
 const PAYMENT_KIND_LABEL: Record<PaymentKind, string> = {
   deposit: "Anticipo",
@@ -431,7 +431,7 @@ export function VentaView({ saleId }: { saleId: string }) {
               </div>
               <div>
                 <span className="k">Creada</span>
-                <span className="v">{relativeTime(sale.createdAt)}</span>
+                <RelativeTime className="v" iso={sale.createdAt} />
               </div>
             </div>
           </div>
@@ -907,7 +907,7 @@ function HistorialCard({ saleId }: { saleId: string }) {
             <li key={event.id}>
               <div className="timeline-head">
                 <b>{ACTION_LABEL[event.action] ?? event.action}</b>
-                <span className="timeline-when">{relativeTime(event.occurredAt)}</span>
+                <RelativeTime className="timeline-when" iso={event.occurredAt} />
               </div>
               <div className="timeline-actor">{event.actor}</div>
               {event.changes && (

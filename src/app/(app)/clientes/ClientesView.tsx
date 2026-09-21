@@ -1,22 +1,25 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Icon } from "@/components/Icon";
+import { RelativeTime } from "@/components/RelativeTime";
+import { TabPanel, Tabs, type TabOption } from "@/components/Tabs";
 import { EmailLinks, PhoneLinks } from "@/components/ContactLinks";
 import { useSession } from "@/lib/auth/AuthProvider";
 import { useDebouncedValue } from "@/lib/hooks/useDebouncedValue";
 import { ApiError } from "@/lib/api/client";
 import {
+  CLIENT_SORT_FIELDS,
   crmApi,
   formatMoney,
-  relativeTime,
   type ClientFilters,
   type ClientSort,
   type ClientSortField,
   type ClientSummary,
   type PipelineStage,
+  type Tag,
 } from "@/lib/api/crm";
 import {
   PIPELINE_STAGE_COLOR,
@@ -31,6 +34,69 @@ import { LIST_PAGE_SIZE, useClientsData } from "./useClientsData";
 
 type View = "kanban" | "lista";
 
+/** Las dos vistas de la cartera · wireframes 03 y 07. */
+const VIEW_TABS: readonly TabOption<View>[] = [
+  { id: "kanban", label: "Kanban", icon: "kanban" },
+  { id: "lista", label: "Lista", icon: "doc" },
+];
+
+/**
+ * "Sin contacto hace…" · `C3`, HU-CLI-06.
+ *
+ * Tres cortes y no un campo libre: la pregunta real del equipo es "¿a quién
+ * tengo abandonado?", y se responde con una semana, dos o un mes. Pedir un
+ * número exacto obligaría a pensar cuál.
+ */
+const STALE_OPTIONS = [7, 15, 30] as const;
+
+/** Lo que viaja en la URL. El orden va aparte, en `sortBy`/`sortDir`. */
+type UrlFilters = Omit<ClientFilters, "page" | "pageSize">;
+
+/**
+ * Filtros, vista y orden leídos de la URL · `C4`.
+ *
+ * Que vivan en la URL es lo que permite compartir "los de Cancún sin contacto
+ * hace 30 días" pegando un enlace, volver con el botón de atrás sin perder el
+ * tablero armado, y que el Dashboard apunte a una selección concreta. Con el
+ * estado en `useState` cada recarga devolvía a la cartera completa.
+ */
+function readFilters(params: URLSearchParams): UrlFilters {
+  const filters: UrlFilters = {};
+  const channel = params.get("channel");
+  const stale = Number(params.get("staleDays"));
+
+  if (params.get("search")) filters.search = params.get("search") ?? undefined;
+  if (params.get("advisorId")) filters.advisorId = params.get("advisorId") ?? undefined;
+  if (channel && (SOURCE_CHANNELS as readonly string[]).includes(channel)) {
+    filters.channel = channel as SourceChannel;
+  }
+  if (params.get("tagId")) filters.tagId = params.get("tagId") ?? undefined;
+  if (params.get("destination")) filters.destination = params.get("destination") ?? undefined;
+  if (params.get("pipelineStageId")) {
+    filters.pipelineStageId = params.get("pipelineStageId") ?? undefined;
+  }
+  if ((STALE_OPTIONS as readonly number[]).includes(stale)) filters.staleDays = stale;
+
+  const sortBy = params.get("sortBy") as ClientSortField | null;
+  if (sortBy && (CLIENT_SORT_FIELDS as readonly string[]).includes(sortBy)) {
+    filters.sortBy = sortBy;
+    filters.sortDir = params.get("sortDir") === "desc" ? "desc" : "asc";
+  }
+
+  return filters;
+}
+
+function toSearchParams(filters: UrlFilters, view: View): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters)) {
+    if (value === undefined || value === null || value === "") continue;
+    params.set(key, String(value));
+  }
+  // El Kanban es la vista por defecto: no ensucia la URL.
+  if (view === "lista") params.set("vista", "lista");
+  return params.toString();
+}
+
 const CHANNEL_CLASS: Record<SourceChannel, string> = {
   whatsapp: "wa",
   messenger: "ms",
@@ -40,69 +106,112 @@ const CHANNEL_CLASS: Record<SourceChannel, string> = {
 
 export function ClientesView() {
   const { user } = useSession();
-  const [view, setView] = useState<View>("kanban");
-  const [filters, setFilters] = useState<ClientFilters>({});
+  const router = useRouter();
+  const pathname = usePathname();
+  const params = useSearchParams();
+
+  /*
+   * Todo el estado de la pantalla se deriva de la URL · `C4`.
+   *
+   * `urlKey` es la cadena y no el objeto de Next: `useSearchParams` devuelve una
+   * instancia nueva en cada render y usarla de dependencia relanzaría la
+   * consulta sin que nada hubiera cambiado.
+   */
+  const urlKey = params.toString();
+  const filters = useMemo(() => readFilters(new URLSearchParams(urlKey)), [urlKey]);
+  const view: View = params.get("vista") === "lista" ? "lista" : "kanban";
+  const sort: ClientSort | null = filters.sortBy
+    ? { by: filters.sortBy, dir: filters.sortDir ?? "asc" }
+    : null;
+
   // La búsqueda vive aparte de los selectores: se escribe letra por letra y
   // necesita retraso, mientras que elegir una opción es una decisión terminada.
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(filters.search ?? "");
   const debouncedSearch = useDebouncedValue(search, 300);
 
-  /**
-   * Término que llega desde el buscador de la barra superior.
-   *
-   * Se sincroniza en un sentido —de la URL al campo— porque es la única entrada
-   * externa que existe hoy. Llevar filtros, vista y orden a la URL es otra cosa
-   * y tiene su propia tarea (C4).
-   */
-  const params = useSearchParams();
-  const urlSearch = params.get("search") ?? "";
-  useEffect(() => {
-    if (urlSearch) setSearch(urlSearch);
-  }, [urlSearch]);
-  const [sort, setSort] = useState<ClientSort | null>(null);
   const [showNew, setShowNew] = useState(false);
   const [lostTarget, setLostTarget] = useState<ClientSummary | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
+  /** El buscador de la barra superior escribe en la URL: el campo lo sigue. */
+  const urlSearch = filters.search ?? "";
+  useEffect(() => {
+    setSearch(urlSearch);
+  }, [urlSearch]);
+
   // El orden viaja al backend junto con los filtros: ordenar solo lo que cabe en
   // la página mentiría cuando la cartera es más grande que el lote cargado.
-  const query = useMemo<ClientFilters>(() => {
-    const next: ClientFilters = { ...filters };
-    const term = debouncedSearch.trim();
-    if (term) next.search = term;
-    if (sort) {
-      next.sortBy = sort.by;
-      next.sortDir = sort.dir;
-    }
-    return next;
-  }, [filters, debouncedSearch, sort]);
+  const query = useMemo<ClientFilters>(() => filters, [filters]);
 
   const data = useClientsData(query, view);
 
   const hasFilters =
     search.trim() !== "" ||
-    Object.values(filters).some((v) => v !== undefined && v !== "");
+    Object.entries(filters).some(
+      ([key, value]) =>
+        key !== "sortBy" && key !== "sortDir" && value !== undefined && value !== "",
+    );
+
+  /**
+   * Escribe en la URL; el estado sale de ahí.
+   *
+   * `replace` y no `push`: cada tecla del buscador dejaría una entrada en el
+   * historial y el botón de atrás tendría que pulsarse una vez por letra.
+   */
+  const apply = useCallback(
+    (next: UrlFilters, nextView: View = view) => {
+      const qs = toSearchParams(next, nextView);
+      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    },
+    [router, pathname, view],
+  );
+
+  /*
+   * Lo escrito llega a la URL cuando deja de escribirse · `C4`.
+   *
+   * Va contra el término YA reposado y no contra cada tecla: escribir "Cancún"
+   * dejaría seis entradas de historial. Y no hay ciclo con el efecto de arriba,
+   * porque al volver de la URL el valor ya es el mismo y `setSearch` no cambia
+   * nada.
+   */
+  useEffect(() => {
+    const term = debouncedSearch.trim();
+    if (term === (filters.search ?? "")) return;
+    apply({ ...filters, search: term || undefined }, view);
+  }, [debouncedSearch, filters, apply, view]);
+
+  const setView = useCallback((next: View) => apply(filters, next), [apply, filters]);
 
   function clearFilters() {
-    setFilters({});
     setSearch("");
+    apply({});
   }
 
-  function setFilter(key: keyof ClientFilters, value: string) {
-    setFilters((prev) => {
-      const next = { ...prev };
-      if (value === "") delete next[key];
-      else next[key] = value as never;
-      return next;
-    });
+  function setFilter(key: keyof UrlFilters, value: string) {
+    apply(nextFilters(filters, key, value), view);
+  }
+
+    function nextFilters(prev: UrlFilters, key: keyof UrlFilters, value: string): UrlFilters {
+    const next = { ...prev };
+    if (value === "") delete next[key];
+    else next[key] = value as never;
+    return next;
   }
 
   /** Ascendente → descendente → sin orden manual, como cualquier tabla conocida. */
   function toggleSort(field: ClientSortField) {
-    setSort((prev) => {
-      if (prev?.by !== field) return { by: field, dir: "asc" };
-      return prev.dir === "asc" ? { by: field, dir: "desc" } : null;
-    });
+    const next = { ...filters };
+    if (sort?.by !== field) {
+      next.sortBy = field;
+      next.sortDir = "asc";
+    } else if (sort.dir === "asc") {
+      next.sortBy = field;
+      next.sortDir = "desc";
+    } else {
+      delete next.sortBy;
+      delete next.sortDir;
+    }
+    apply(next, view);
   }
 
   /** Devuelve false si el backend rechazó el movimiento, para revertir la tarjeta. */
@@ -127,27 +236,19 @@ export function ClientesView() {
     [data.stages],
   );
 
+  /** La ficha trae `tagIds`; el nombre sale del catálogo (`C9`). */
+  const tagById = useMemo(() => new Map(data.tags.map((t) => [t.id, t])), [data.tags]);
+
   return (
     <>
       <div className="filterbar">
-        <div className="viewtabs">
-          <button
-            type="button"
-            aria-pressed={view === "kanban"}
-            onClick={() => setView("kanban")}
-          >
-            <Icon name="kanban" />
-            Kanban
-          </button>
-          <button
-            type="button"
-            aria-pressed={view === "lista"}
-            onClick={() => setView("lista")}
-          >
-            <Icon name="doc" />
-            Lista
-          </button>
-        </div>
+        <Tabs
+          options={VIEW_TABS}
+          value={view}
+          onChange={setView}
+          label="Vista de la cartera"
+          idPrefix="clientes"
+        />
 
         <input
           className="selectfilter"
@@ -197,6 +298,49 @@ export function ClientesView() {
           {data.tags.map((tag) => (
             <option key={tag.id} value={tag.id}>
               {tag.name}
+            </option>
+          ))}
+        </select>
+
+        {/* C3 · los tres filtros que HU-CLI-06 pide y faltaban. */}
+        <select
+          className="selectfilter"
+          value={filters.pipelineStageId ?? ""}
+          onChange={(e) => setFilter("pipelineStageId", e.target.value)}
+          aria-label="Filtrar por etapa"
+        >
+          <option value="">Etapa</option>
+          {data.stages.map((stage) => (
+            <option key={stage.id} value={stage.id}>
+              {stageLabel(stage)}
+            </option>
+          ))}
+        </select>
+
+        <input
+          className="selectfilter"
+          style={{ minWidth: 130 }}
+          placeholder="Destino"
+          defaultValue={filters.destination ?? ""}
+          // Al salir del campo y no en cada tecla: el destino se escribe entero
+          // —"Punta Cana"— y filtrar por "Pun" no le sirve a nadie.
+          onBlur={(e) => setFilter("destination", e.target.value.trim())}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+          }}
+          aria-label="Filtrar por destino"
+        />
+
+        <select
+          className="selectfilter"
+          value={filters.staleDays ?? ""}
+          onChange={(e) => setFilter("staleDays", e.target.value)}
+          aria-label="Filtrar por tiempo sin contacto"
+        >
+          <option value="">Sin contacto</option>
+          {STALE_OPTIONS.map((days) => (
+            <option key={days} value={days}>
+              Hace {days} días o más
             </option>
           ))}
         </select>
@@ -275,32 +419,38 @@ export function ClientesView() {
             </button>
           )}
         </div>
-      ) : view === "kanban" ? (
-        <KanbanBoard
-          stages={data.stages}
-          board={data.board}
-          counts={data.counts}
-          onMove={handleMove}
-          onLoadMore={(stageId) => void data.loadMore(stageId)}
-          onRequestLost={setLostTarget}
-        />
       ) : (
-        <>
-          <ClientTable
-            clients={data.list}
-            stageById={stageById}
-            sort={sort}
-            onSort={toggleSort}
-            onRequestLost={setLostTarget}
-          />
-          <Paginacion
-            page={data.page}
-            total={data.total}
-            shown={data.list.length}
-            busy={data.loading}
-            onGo={(next) => void data.goToPage(next)}
-          />
-        </>
+        <TabPanel id={view} idPrefix="clientes">
+          {view === "kanban" ? (
+            <KanbanBoard
+              stages={data.stages}
+              tags={data.tags}
+              board={data.board}
+              counts={data.counts}
+              onMove={handleMove}
+              onLoadMore={(stageId) => void data.loadMore(stageId)}
+              onRequestLost={setLostTarget}
+            />
+          ) : (
+            <>
+              <ClientTable
+                clients={data.list}
+                stageById={stageById}
+                tagById={tagById}
+                sort={sort}
+                onSort={toggleSort}
+                onRequestLost={setLostTarget}
+              />
+              <Paginacion
+                page={data.page}
+                total={data.total}
+                shown={data.list.length}
+                busy={data.loading}
+                onGo={(next) => void data.goToPage(next)}
+              />
+            </>
+          )}
+        </TabPanel>
       )}
 
       {showNew && (
@@ -428,12 +578,14 @@ function SortableTh({
 function ClientTable({
   clients,
   stageById,
+  tagById,
   sort,
   onSort,
   onRequestLost,
 }: {
   clients: ClientSummary[];
   stageById: Map<string, PipelineStage>;
+  tagById: Map<string, Tag>;
   sort: ClientSort | null;
   onSort: (field: ClientSortField) => void;
   onRequestLost: (client: ClientSummary) => void;
@@ -484,6 +636,27 @@ function ClientTable({
                             <EmailLinks email={client.primaryEmail} />
                           )}
                         </div>
+                        {/* Etiquetas en la fila · `C9`, igual que en la tarjeta. */}
+                        {client.tagIds.length > 0 && (
+                          <div className="row-tags">
+                            {client.tagIds.slice(0, 3).map((id) => {
+                              const tag = tagById.get(id);
+                              return tag ? (
+                                <span key={id} className="chip tag-chip">
+                                  {tag.name}
+                                </span>
+                              ) : null;
+                            })}
+                            {client.tagIds.length > 3 && (
+                              <span
+                                className="chip tag-chip is-more"
+                                title="Abrí el expediente para verlas todas"
+                              >
+                                +{client.tagIds.length - 3}
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </span>
                   </td>
@@ -514,7 +687,7 @@ function ClientTable({
                   </td>
                   <td>
                     <span style={{ color: "var(--text-mute)", fontSize: 12 }}>
-                      {relativeTime(client.lastContactAt)}
+                      <RelativeTime iso={client.lastContactAt} />
                     </span>
                   </td>
                   <td style={{ textAlign: "right" }}>
