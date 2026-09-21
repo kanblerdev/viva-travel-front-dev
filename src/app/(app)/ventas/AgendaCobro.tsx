@@ -3,9 +3,10 @@
 import { useState } from "react";
 import Link from "next/link";
 import { Icon } from "@/components/Icon";
+import { RelativeTime } from "@/components/RelativeTime";
 import { EmailLinks, PhoneLinks } from "@/components/ContactLinks";
 import { ApiError } from "@/lib/api/client";
-import { crmApi, formatAmount, relativeTime, type SaleSummary } from "@/lib/api/crm";
+import { crmApi, formatAmount, type SaleSummary } from "@/lib/api/crm";
 
 /**
  * Agenda de cobro.
@@ -203,7 +204,7 @@ function AgendaRow({ sale, onLogged }: { sale: SaleSummary; onLogged: () => void
         {sale.lastCollectionContactAt && !logging && (
           <span className="agenda-last" title={sale.lastCollectionNote ?? undefined}>
             <Icon name="check" width={11} height={11} />
-            {relativeTime(sale.lastCollectionContactAt)}
+            <RelativeTime iso={sale.lastCollectionContactAt} />
           </span>
         )}
         {logging ? (

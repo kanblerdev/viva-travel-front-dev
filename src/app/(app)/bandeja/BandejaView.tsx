@@ -4,13 +4,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Icon } from "@/components/Icon";
+import { RelativeTime } from "@/components/RelativeTime";
+import { TabPanel, Tabs } from "@/components/Tabs";
 import { useSession, type SessionUser } from "@/lib/auth/AuthProvider";
 import { ApiError } from "@/lib/api/client";
 import {
   crmApi,
   DUPLICATE_REASON_LABEL,
   formatMoney,
-  relativeTime,
   type ConversationCounts,
   type ConversationDetail,
   type ConversationSummary,
@@ -200,19 +201,24 @@ export function BandejaView() {
       >
         {/* Columna izquierda · lista de conversaciones */}
         <div className="inbox-panel list-panel">
-          <div className="inbox-tabs" role="group" aria-label="Vista de la bandeja">
-            {VIEWS.map((v) => (
-              <button
-                key={v}
-                type="button"
-                aria-pressed={view === v}
-                onClick={() => setParams({ vista: v === "unassigned" ? null : v })}
-              >
-                {VIEW_LABEL[v]}
-                {counts ? ` · ${v === "unassigned" ? counts.unassigned : v === "mine" ? counts.mine : counts.all}` : ""}
-              </button>
-            ))}
-          </div>
+          <Tabs
+            className="inbox-tabs"
+            options={VIEWS.map((v) => ({
+              id: v,
+              label: VIEW_LABEL[v],
+              count: counts
+                ? v === "unassigned"
+                  ? counts.unassigned
+                  : v === "mine"
+                    ? counts.mine
+                    : counts.all
+                : null,
+            }))}
+            value={view}
+            onChange={(next) => setParams({ vista: next === "unassigned" ? null : next })}
+            label="Vista de la bandeja"
+            idPrefix="bandeja"
+          />
 
           <div className="inbox-filters">
             <label className="sr-only" htmlFor="inboxSearch">
@@ -277,7 +283,7 @@ export function BandejaView() {
             )}
           </div>
 
-          <div className="inbox-list">
+          <TabPanel id={view} idPrefix="bandeja" className="inbox-list">
             {listError && (
               <div className="inbox-empty" role="alert">
                 <span style={{ color: "var(--red)" }}>{listError}</span>
@@ -316,7 +322,7 @@ export function BandejaView() {
                 </button>
               </div>
             )}
-          </div>
+          </TabPanel>
         </div>
 
         {selectedId ? (
@@ -439,7 +445,7 @@ function ConversationRow({
         <span className="top">
           <span className="nm">{name}</span>
           <time className="tm" dateTime={conversation.lastMessageAt} title={absolute(conversation.lastMessageAt)}>
-            {relativeTime(conversation.lastMessageAt)}
+            <RelativeTime iso={conversation.lastMessageAt} />
           </time>
         </span>
         <span className="prev">{conversation.lastMessagePreview ?? "—"}</span>

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/Icon";
+import { RelativeTime } from "@/components/RelativeTime";
 import { Modal } from "@/components/Modal";
 import { SignedFileLink } from "@/components/SignedFileLink";
 import { ApiError } from "@/lib/api/client";
@@ -11,7 +12,6 @@ import { useSession } from "@/lib/auth/AuthProvider";
 import {
   crmApi,
   formatMoney,
-  relativeTime,
   type LossReason,
   type QuoteDetail,
   type QuoteVersionData,
@@ -528,7 +528,7 @@ export function CotizacionView({ quoteId }: { quoteId: string }) {
                       {formatMoney(entry.pricing.finalPrice)} ·{" "}
                       {entry.createdBy?.name ?? "—"}
                     </span>
-                    <span className="when">{relativeTime(entry.issuedAt)}</span>
+                    <RelativeTime className="when" iso={entry.issuedAt} />
                     {entry.versionNumber !== quote.versionCount && (
                       <button
                         type="button"

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Icon } from "@/components/Icon";
+import { EmptyState, ErrorCard, LoadingCard } from "@/components/StateCards";
 import { ApiError } from "@/lib/api/client";
 import {
   crmApi,
@@ -395,37 +396,31 @@ export function CotizacionesView() {
       </div>
 
       {error ? (
-        <div className="card" style={{ padding: 48, textAlign: "center" }}>
-          <div style={{ color: "var(--red)", fontWeight: 600, marginBottom: 10 }}>{error}</div>
-          <button className="btn ghost" onClick={() => void load()}>
-            Reintentar
-          </button>
-        </div>
+        <ErrorCard message={error} onRetry={() => void load()} />
       ) : quotes === null ? (
-        <div className="card" style={{ padding: 48, textAlign: "center", color: "var(--text-mute)" }}>
-          Cargando cotizaciones…
-        </div>
+        <LoadingCard>Cargando cotizaciones…</LoadingCard>
       ) : quotes.length === 0 ? (
-        <div className="card" style={{ padding: 48, textAlign: "center" }}>
-          <div style={{ fontWeight: 600, marginBottom: 6 }}>
-            {hasFilters ? "Sin coincidencias" : "Todavía no hay cotizaciones"}
-          </div>
-          <div style={{ fontSize: 13, color: "var(--text-mute)", marginBottom: 18 }}>
-            {hasFilters
+        <EmptyState
+          icon="doc"
+          title={hasFilters ? "Sin coincidencias" : "Todavía no hay cotizaciones"}
+          hint={
+            hasFilters
               ? "Ajustá o limpiá los filtros para ver todas."
-              : "Creá la primera desde un expediente o con el botón de arriba."}
-          </div>
-          {hasFilters ? (
-            <button className="btn ghost" onClick={clearFilters}>
-              Limpiar filtros
-            </button>
-          ) : (
-            <Link href="/cotizaciones/nueva" className="btn primary">
-              <Icon name="plus" />
-              Nueva cotización
-            </Link>
-          )}
-        </div>
+              : "Creá la primera desde un expediente o con el botón de arriba."
+          }
+          action={
+            hasFilters ? (
+              <button type="button" className="btn ghost" onClick={clearFilters}>
+                Limpiar filtros
+              </button>
+            ) : (
+              <Link href="/cotizaciones/nueva" className="btn primary">
+                <Icon name="plus" />
+                Nueva cotización
+              </Link>
+            )
+          }
+        />
       ) : (
         <div className="card" style={{ padding: 0, overflow: "hidden", opacity: loading ? 0.6 : 1 }}>
           <div style={{ overflowX: "auto" }}>

@@ -12,6 +12,8 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Icon } from "@/components/Icon";
+import { RelativeTime } from "@/components/RelativeTime";
+import { TabPanel, Tabs } from "@/components/Tabs";
 import { EmailLinks, PhoneLinks } from "@/components/ContactLinks";
 import { SignedFileLink } from "@/components/SignedFileLink";
 import { useSession, type SessionUser } from "@/lib/auth/AuthProvider";
@@ -22,7 +24,6 @@ import {
   formatAmount,
   formatMoney,
   isFollowUpOverdue,
-  relativeTime,
   type ActivityEvent,
   type ClientDetail,
   type ConversationSummary,
@@ -263,7 +264,7 @@ export function ExpedienteView({ clientId }: { clientId: string }) {
               <div>
                 Se había descartado por{" "}
                 <b>{client.lostReason.name ?? "un motivo retirado"}</b> y volvió al flujo{" "}
-                {relativeTime(client.reactivatedAt)}.
+                <RelativeTime iso={client.reactivatedAt} />.
               </div>
             </div>
           )}
@@ -326,21 +327,17 @@ export function ExpedienteView({ clientId }: { clientId: string }) {
         </div>
       )}
 
-      <div className="viewtabs" style={{ margin: "14px 0" }}>
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            aria-pressed={tab === t.id}
-            onClick={() => setTab(t.id)}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
+      <Tabs
+        options={TABS}
+        value={tab}
+        onChange={setTab}
+        label="Secciones del expediente"
+        idPrefix="expediente"
+        style={{ margin: "14px 0" }}
+      />
 
       <div className="exp-body">
-        <div style={{ minWidth: 0 }}>
+        <TabPanel id={tab} idPrefix="expediente" style={{ minWidth: 0 }}>
           {tab === "datos" ? (
             <DatosGenerales
               client={client}
@@ -357,7 +354,7 @@ export function ExpedienteView({ clientId }: { clientId: string }) {
           ) : (
             <ConversacionesTab clientId={client.id} />
           )}
-        </div>
+        </TabPanel>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           {!merged && duplicates.length > 0 && (
@@ -389,7 +386,7 @@ export function ExpedienteView({ clientId }: { clientId: string }) {
                       <b>{ACTION_LABEL[event.action] ?? event.action}</b>
                       <ChangeSummary event={event} />
                       <span className="when">
-                        {event.actor} · {relativeTime(event.occurredAt)}
+                        {event.actor} · <RelativeTime iso={event.occurredAt} />
                       </span>
                     </div>
                   </div>
@@ -466,7 +463,7 @@ function SeguimientoCard({ client }: { client: ClientDetail }) {
         <div>
           <span className="k">Último contacto</span>
           <span className="v">
-            {client.lastContactAt ? relativeTime(client.lastContactAt) : "Sin registrar"}
+            <RelativeTime iso={client.lastContactAt} empty="Sin registrar" />
           </span>
         </div>
         <div>
@@ -1368,8 +1365,8 @@ function NotasCard({ client, canEdit, onSave }: CardProps) {
             color: "var(--text-faint)",
           }}
         >
-          Creado {relativeTime(client.createdAt)} · última edición{" "}
-          {relativeTime(client.updatedAt)}
+          Creado <RelativeTime iso={client.createdAt} /> · última edición{" "}
+          <RelativeTime iso={client.updatedAt} />
         </div>
       </>
     </EditableCard>
@@ -1843,7 +1840,7 @@ function ArchivosTab({ clientId, canEdit }: { clientId: string; canEdit: boolean
                       {formatBytes(file.sizeBytes)}
                     </td>
                     <td style={{ fontSize: 12, color: "var(--text-mute)" }}>
-                      {relativeTime(file.uploadedAt)}
+                      <RelativeTime iso={file.uploadedAt} />
                     </td>
                     <td>
                       <SignedFileLink
@@ -1990,7 +1987,7 @@ function ConversacionesTab({ clientId }: { clientId: string }) {
                     dateTime={conversation.lastMessageAt}
                     style={{ fontSize: 11, color: "var(--text-mute)" }}
                   >
-                    {relativeTime(conversation.lastMessageAt)}
+                    <RelativeTime iso={conversation.lastMessageAt} />
                   </time>
                 </td>
                 <td>

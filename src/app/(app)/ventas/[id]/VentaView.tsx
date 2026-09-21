@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Icon } from "@/components/Icon";
+import { RelativeTime } from "@/components/RelativeTime";
 import { SignedFileLink } from "@/components/SignedFileLink";
 import { useSession } from "@/lib/auth/AuthProvider";
 import { ApiError } from "@/lib/api/client";
@@ -12,7 +13,6 @@ import {
   formatAmount,
   formatMoney,
   paidPercentage,
-  relativeTime,
   type SaleDetail,
   type SaleActivity,
   type SalePayment,
@@ -431,7 +431,7 @@ export function VentaView({ saleId }: { saleId: string }) {
               </div>
               <div>
                 <span className="k">Creada</span>
-                <span className="v">{relativeTime(sale.createdAt)}</span>
+                <RelativeTime className="v" iso={sale.createdAt} />
               </div>
             </div>
           </div>
@@ -907,7 +907,7 @@ function HistorialCard({ saleId }: { saleId: string }) {
             <li key={event.id}>
               <div className="timeline-head">
                 <b>{ACTION_LABEL[event.action] ?? event.action}</b>
-                <span className="timeline-when">{relativeTime(event.occurredAt)}</span>
+                <RelativeTime className="timeline-when" iso={event.occurredAt} />
               </div>
               <div className="timeline-actor">{event.actor}</div>
               {event.changes && (

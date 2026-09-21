@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Icon } from "@/components/Icon";
+import { RelativeTime } from "@/components/RelativeTime";
+import { TabPanel, Tabs, type TabOption } from "@/components/Tabs";
 import { EmailLinks, PhoneLinks } from "@/components/ContactLinks";
 import { useSession } from "@/lib/auth/AuthProvider";
 import { useDebouncedValue } from "@/lib/hooks/useDebouncedValue";
@@ -11,7 +13,6 @@ import { ApiError } from "@/lib/api/client";
 import {
   crmApi,
   formatMoney,
-  relativeTime,
   type ClientFilters,
   type ClientSort,
   type ClientSortField,
@@ -30,6 +31,12 @@ import { MarkLostModal, NewProspectModal } from "./modals";
 import { LIST_PAGE_SIZE, useClientsData } from "./useClientsData";
 
 type View = "kanban" | "lista";
+
+/** Las dos vistas de la cartera · wireframes 03 y 07. */
+const VIEW_TABS: readonly TabOption<View>[] = [
+  { id: "kanban", label: "Kanban", icon: "kanban" },
+  { id: "lista", label: "Lista", icon: "doc" },
+];
 
 const CHANNEL_CLASS: Record<SourceChannel, string> = {
   whatsapp: "wa",
@@ -130,24 +137,13 @@ export function ClientesView() {
   return (
     <>
       <div className="filterbar">
-        <div className="viewtabs">
-          <button
-            type="button"
-            aria-pressed={view === "kanban"}
-            onClick={() => setView("kanban")}
-          >
-            <Icon name="kanban" />
-            Kanban
-          </button>
-          <button
-            type="button"
-            aria-pressed={view === "lista"}
-            onClick={() => setView("lista")}
-          >
-            <Icon name="doc" />
-            Lista
-          </button>
-        </div>
+        <Tabs
+          options={VIEW_TABS}
+          value={view}
+          onChange={setView}
+          label="Vista de la cartera"
+          idPrefix="clientes"
+        />
 
         <input
           className="selectfilter"
@@ -275,32 +271,36 @@ export function ClientesView() {
             </button>
           )}
         </div>
-      ) : view === "kanban" ? (
-        <KanbanBoard
-          stages={data.stages}
-          board={data.board}
-          counts={data.counts}
-          onMove={handleMove}
-          onLoadMore={(stageId) => void data.loadMore(stageId)}
-          onRequestLost={setLostTarget}
-        />
       ) : (
-        <>
-          <ClientTable
-            clients={data.list}
-            stageById={stageById}
-            sort={sort}
-            onSort={toggleSort}
-            onRequestLost={setLostTarget}
-          />
-          <Paginacion
-            page={data.page}
-            total={data.total}
-            shown={data.list.length}
-            busy={data.loading}
-            onGo={(next) => void data.goToPage(next)}
-          />
-        </>
+        <TabPanel id={view} idPrefix="clientes">
+          {view === "kanban" ? (
+            <KanbanBoard
+              stages={data.stages}
+              board={data.board}
+              counts={data.counts}
+              onMove={handleMove}
+              onLoadMore={(stageId) => void data.loadMore(stageId)}
+              onRequestLost={setLostTarget}
+            />
+          ) : (
+            <>
+              <ClientTable
+                clients={data.list}
+                stageById={stageById}
+                sort={sort}
+                onSort={toggleSort}
+                onRequestLost={setLostTarget}
+              />
+              <Paginacion
+                page={data.page}
+                total={data.total}
+                shown={data.list.length}
+                busy={data.loading}
+                onGo={(next) => void data.goToPage(next)}
+              />
+            </>
+          )}
+        </TabPanel>
       )}
 
       {showNew && (
@@ -514,7 +514,7 @@ function ClientTable({
                   </td>
                   <td>
                     <span style={{ color: "var(--text-mute)", fontSize: 12 }}>
-                      {relativeTime(client.lastContactAt)}
+                      <RelativeTime iso={client.lastContactAt} />
                     </span>
                   </td>
                   <td style={{ textAlign: "right" }}>

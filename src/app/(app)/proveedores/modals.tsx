@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Icon } from "@/components/Icon";
+import { Modal } from "@/components/Modal";
 import { ApiError } from "@/lib/api/client";
 import {
   crmApi,
@@ -20,49 +21,6 @@ import {
   type ServiceType,
   type SupplierType,
 } from "@/lib/domain/enums";
-
-/* ─────────────────────────────── Envoltorio ───────────────────────────────── */
-
-function Modal({
-  title,
-  onClose,
-  children,
-}: {
-  title: ReactNode;
-  onClose: () => void;
-  children: ReactNode;
-}) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    document.body.style.overflow = "hidden";
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      document.body.style.overflow = "";
-    };
-  }, [onClose]);
-
-  return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div
-        className="modal"
-        role="dialog"
-        aria-modal="true"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="modal-head">
-          <h2>{title}</h2>
-          <button type="button" className="iconbtn" onClick={onClose} aria-label="Cerrar">
-            <Icon name="x" />
-          </button>
-        </div>
-        {children}
-      </div>
-    </div>
-  );
-}
 
 /** "a, b , c" → ["a", "b", "c"] sin vacíos ni repetidos. */
 function splitList(value: string): string[] {

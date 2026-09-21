@@ -493,7 +493,20 @@ table.t .th-sort.is-active svg { opacity: 1; color: var(--orange); }
   color: var(--text-mute); padding: 7px 13px; border-radius: 7px;
 }
 .viewtabs button svg { width: 14px; height: 14px; }
-.viewtabs button[aria-pressed="true"] { background: var(--navy); color: #fff; }
+/* `aria-selected` y no `aria-pressed`: son pestañas, no botones alternables (E2). */
+.viewtabs button[aria-selected="true"] { background: var(--navy); color: #fff; }
+.viewtabs button:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
+/* Cuántos elementos hay detrás de la pestaña, sin abrirla (C7). */
+.viewtabs .tab-count {
+  min-width: 18px; padding: 0 5px; border-radius: 9px;
+  background: var(--bg-app); color: var(--text-mute);
+  font-size: 11px; font-weight: 700; line-height: 18px; text-align: center;
+}
+.viewtabs button[aria-selected="true"] .tab-count { background: rgba(255,255,255,.22); color: #fff; }
+/* El panel es enfocable para que el tabulador entre al contenido: sin esto, el
+   anillo del navegador rodearía el bloque entero al llegar. */
+.viewtabs + [role="tabpanel"]:focus-visible,
+[role="tabpanel"]:focus-visible { outline: none; }
 
 /* Barra de filtros */
 .filterbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
@@ -998,6 +1011,18 @@ table.t .th-sort.is-active svg { opacity: 1; color: var(--orange); }
 }
 
 /* Modales (wireframe 13) */
+/* Aviso de cambios sin guardar al cerrar un diálogo · E1. Va DENTRO del
+   diálogo y no como otro modal encima: apilar dos capas modales deja la trampa
+   de foco compitiendo consigo misma. */
+.modal-discard {
+  margin: 0 18px 14px;
+  padding: 10px 12px; border-radius: 9px;
+  background: var(--red-bg, #FDF3F2); border: 1px solid var(--red-soft, #F3C9C4);
+  font-size: 12px; line-height: 1.6; color: var(--text);
+}
+.modal-discard b { color: var(--red); }
+.modal-discard > div { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+
 .modal-backdrop {
   position: fixed; inset: 0; z-index: 100;
   background: rgba(6, 21, 52, 0.55);
@@ -1300,10 +1325,6 @@ table.t .th-sort.is-active svg { opacity: 1; color: var(--orange); }
 }
 
 /* ===== Responsive ===== */
-@media (max-width: 1180px) {
-  .kanban { grid-template-columns: repeat(3, minmax(220px, 1fr)); overflow-x: auto; }
-}
-
 @media (max-width: 1024px) {
   /* `.stats.five` (0,2,0) le gana en especificidad a `.stats` (0,1,0) aunque esta
      regla venga después, así que el quinto indicador hay que bajarlo aquí por su
@@ -1361,14 +1382,18 @@ table.t .th-sort.is-active svg { opacity: 1; color: var(--orange); }
   .pagebody { padding: 16px; }
   .page-h h1 { font-size: 20px; }
 
-  /* Kanban: horizontal scroll on tablet/mobile */
+  /* Kanban en móvil · D6.
+     Lo único que cambia respecto del escritorio es el anclaje: `mandatory` deja
+     cada columna centrada al soltar el dedo, mientras que en pantalla grande
+     `proximity` permite ver dos a medias. El resto —el desplazamiento
+     horizontal y el anclaje de la columna— ya está en la regla base.
+     Acá había además `grid-template-columns`, que no hacía NADA: `.kanban` es
+     un contenedor flex, y una propiedad de grid sobre flex se ignora. Estuvo
+     desde el mockup y hacía creer que el tablero cambiaba de maqueta en móvil. */
   .kanban {
-    grid-template-columns: repeat(5, 260px);
-    overflow-x: auto;
     padding-bottom: 8px;
     scroll-snap-type: x mandatory;
   }
-  .kanban .col { scroll-snap-align: start; }
 
   /* Login layout */
   .login-wrap { grid-template-columns: 1fr; }
@@ -1640,3 +1665,21 @@ table.t .th-sort.is-active svg { opacity: 1; color: var(--orange); }
 @media (max-width: 720px) {
   .merge-choice { grid-template-columns: 1fr; }
 }
+
+/* ===== Carga, vacío y error · D7 =====
+ * Los tres estados que el DoD exige en cada listado. La maqueta vive acá y no
+ * en atributos `style`: cuatro módulos la traían repetida en línea y ya había
+ * empezado a divergir. */
+.state-card {
+  padding: 48px 24px;
+  text-align: center;
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+}
+.state-card p { margin: 0; }
+.state-card-icon { color: var(--text-faint); }
+.state-card-title { font-size: 15px; font-weight: 700; color: var(--text); }
+.state-card-note {
+  font-size: 14px; color: var(--text-mute); line-height: 1.6;
+  max-width: 460px;
+}
+.state-card-error { font-size: 14px; font-weight: 600; color: var(--red); }

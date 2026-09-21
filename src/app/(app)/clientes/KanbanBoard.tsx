@@ -3,10 +3,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { Icon } from "@/components/Icon";
+import { RelativeTime } from "@/components/RelativeTime";
 import {
   formatMoney,
   isFollowUpOverdue,
-  relativeTime,
   type ClientSummary,
   type PipelineStage,
 } from "@/lib/api/crm";
@@ -360,7 +360,7 @@ function OpportunityCard({
         ) : (
           <span className="chip amber">Sin asignar</span>
         )}
-        <span className="date">{relativeTime(client.lastContactAt)}</span>
+        <RelativeTime className="date" iso={client.lastContactAt} />
       </div>
     </div>
   );
