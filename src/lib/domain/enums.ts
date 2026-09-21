@@ -270,6 +270,22 @@ export const HSM_STATUS_LABEL: Record<HsmStatus, string> = {
   approved: "Aprobada",
   rejected: "Rechazada",
 };
+/** Categorías que acepta Meta al registrar una plantilla (Cloud API). */
+export const HSM_CATEGORIES = ["marketing", "utility"] as const;
+export type HsmCategory = (typeof HSM_CATEGORIES)[number];
+
+export const HSM_CATEGORY_LABEL: Record<HsmCategory, string> = {
+  marketing: "Marketing",
+  utility: "Utilidad",
+};
+
+/** Qué admite Meta en cada categoría. Elegir mal es el rechazo más común. */
+export const HSM_CATEGORY_HELP: Record<HsmCategory, string> = {
+  marketing: "Promociones, novedades y ofertas. Meta la revisa con más exigencia.",
+  utility:
+    "Seguimiento de algo que el cliente ya pidió: una cotización, un saldo, una confirmación.",
+};
+
 
 /* ──────────────────────────── Canales de Meta ─────────────────────────────── */
 

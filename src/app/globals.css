@@ -616,6 +616,59 @@ table.t .th-sort.is-active svg { opacity: 1; color: var(--orange); }
 }
 .composer-error svg { flex: none; margin-top: 2px; }
 
+/* ===== Plantilla con la ventana cerrada · HU-HSM-04 =====
+ * Con la ventana vencida el campo de texto no sirve para nada, así que el
+ * cuadro se convierte en el selector: es el único camino que Meta deja abierto
+ * y conviene que se vea como tal, no como un campo bloqueado. */
+.composer-template-cta {
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  width: 100%; padding: 11px 13px;
+  border: 1px dashed var(--border); border-radius: 9px;
+  background: var(--bg-app); cursor: pointer;
+  font-family: inherit; font-size: 13px; font-weight: 600; color: var(--text);
+}
+.composer-template-cta:hover { border-color: var(--orange); color: var(--orange); }
+.composer-template-cta svg { flex: none; }
+
+.composer-template {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 12px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--bg-app);
+  font-size: 13px; color: var(--text-mute); line-height: 1.6;
+}
+.composer-template p { margin: 0; }
+.composer-template b { color: var(--text); }
+.composer-template-label {
+  display: block; margin-bottom: 4px;
+  font-size: 11px; font-weight: 600; color: var(--text);
+}
+.composer-template select,
+.composer-template input {
+  width: 100%; box-sizing: border-box;
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 9px 11px; font-family: inherit; font-size: 13px; color: var(--text);
+  background: var(--white);
+}
+.composer-template-vars { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+/* Lo que va a leer el cliente, ya con los valores puestos. */
+.composer-template-preview {
+  padding: 9px 11px; border-radius: 8px;
+  background: var(--white); border: 1px solid var(--border-soft);
+}
+.composer-template-preview span {
+  display: block; margin-bottom: 4px;
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--text-faint);
+}
+.composer-template-preview p {
+  font-size: 13px; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.composer-template-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+@media (max-width: 700px) {
+  .composer-template-vars { grid-template-columns: 1fr; }
+}
+
 /* Saliente que no salió. Se despinta del azul de "enviado" para que no se
    confunda de un vistazo; el motivo va debajo, fuera de la burbuja, para que
    su largo no decida el ancho del mensaje. */
