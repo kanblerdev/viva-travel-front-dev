@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   crmApi,
   type ClientFilters,
@@ -28,287 +29,231 @@ export type StageBucket = {
   loadingMore: boolean;
 };
 
-type State = {
-  stages: PipelineStage[];
-  tags: Tag[];
-  team: TeamMember[];
-  /** Tablero: una tanda por etapa. */
-  board: Record<string, StageBucket>;
-  /** Lista: la página que se está viendo. */
-  list: ClientSummary[];
-  page: number;
-  /** Conteo por etapa, del backend: refleja el total, no solo lo cargado. */
-  counts: Record<string, number>;
-  total: number;
-  loading: boolean;
-  error: string | null;
-  /** Falla de catálogos. Va aparte: sin etapas el tablero no tiene columnas. */
-  catalogError: string | null;
-};
-
-const EMPTY: State = {
-  stages: [],
-  tags: [],
-  team: [],
-  board: {},
-  list: [],
-  page: 1,
-  counts: {},
-  total: 0,
-  loading: true,
-  error: null,
-  catalogError: null,
-};
-
 export type ClientsView = "kanban" | "lista";
 
+/** Los catálogos cambian poco: media hora sin volver a pedirlos. */
+const CATALOG_STALE_MS = 30 * 60 * 1000;
+
+function message(caught: unknown, fallback: string): string {
+  return caught instanceof ApiError ? caught.message : fallback;
+}
+
 /**
- * Carga del tablero y del listado.
+ * Carga del tablero y del listado · piloto de `D1`.
  *
- * Antes se pedían 200 expedientes de una y no había paginación en ninguna vista:
- * una columna podía anunciar 45 fichas y dibujar 12, y la barra de filtros decir
- * "312 oportunidades" sobre una tabla de 200 filas. Los contadores nunca
- * estuvieron mal —salen de una agregación sobre la cartera entera—; lo que
- * faltaba era poder llegar al resto.
+ * Antes esto era un `useState` con once campos, un `useRef` de espejo para
+ * poder leerlo dentro de los callbacks sin recrearlos, y un contador de
+ * peticiones para descartar la respuesta que llegaba tarde. Las tres cosas
+ * existían para resolver lo que una capa de datos resuelve sola:
+ *
+ *  - **La carrera.** `keepPreviousData` deja en pantalla lo anterior mientras
+ *    llega lo nuevo, y la librería descarta la respuesta de una clave que ya no
+ *    es la vigente. El testigo de petición desaparece.
+ *  - **La caché.** Volver del expediente al tablero ya no vuelve a pedir ocho
+ *    columnas: dentro de la ventana de frescura se pinta lo que hay.
+ *  - **El estado.** Cargando, error y datos vienen de cada consulta, en vez de
+ *    convivir en un objeto que cada camino tenía que actualizar entero.
+ *
+ * La API pública no cambió: las pantallas siguen recibiendo lo mismo.
  */
 export function useClientsData(filters: ClientFilters, view: ClientsView) {
-  const [state, setState] = useState<State>(EMPTY);
+  const queryClient = useQueryClient();
 
-  // Se serializan para comparar por valor: un objeto nuevo en cada render
-  // dispararía la recarga en bucle.
+  // Se serializa para comparar por valor: un objeto nuevo en cada render sería
+  // una clave nueva en cada render, y la consulta no pararía de repetirse.
   const filterKey = JSON.stringify(filters);
 
+  const [page, setPage] = useState(1);
   /**
-   * Testigo de la petición en curso.
+   * Cuántas tandas lleva cargadas cada columna · HU-CLI-08.
    *
-   * Sin esto gana la respuesta que llega última, que no es necesariamente la de
-   * la consulta más nueva: una respuesta lenta de "mar" pisaba los resultados de
-   * "maría" y la lista dejaba de corresponder con lo que el usuario tenía escrito.
+   * Es lo único que queda como estado local, y es el estado correcto: no es un
+   * dato del servidor sino hasta dónde pidió llegar esta persona. Entra en la
+   * clave de la consulta, así que "cargar más" es pedir la misma columna con un
+   * lote más grande —y de paso se corrige sola si alguien movió una ficha entre
+   * tandas, que antes había que filtrar a mano por id repetido—.
    */
-  const requestId = useRef(0);
+  const [pagesByStage, setPagesByStage] = useState<Record<string, number>>({});
 
-  /**
-   * Espejo del estado, para leerlo dentro de un callback sin meterlo en sus
-   * dependencias: si `load` dependiera de `state`, cada carga lo recrearía y el
-   * efecto volvería a dispararse en bucle.
+  /* ─────────────────────────────── Catálogos ──────────────────────────────── */
+
+  const stagesQuery = useQuery({
+    queryKey: ["pipeline-stages"],
+    queryFn: () => crmApi.stages(),
+    staleTime: CATALOG_STALE_MS,
+  });
+
+  // Cada uno por separado a propósito: que falle el catálogo de etiquetas no
+  // puede dejar el tablero sin columnas. Cada uno degrada solo lo suyo.
+  const tagsQuery = useQuery({
+    queryKey: ["tags"],
+    queryFn: () => crmApi.tags(),
+    staleTime: CATALOG_STALE_MS,
+  });
+
+  const teamQuery = useQuery({
+    queryKey: ["team"],
+    queryFn: () => crmApi.team(),
+    staleTime: CATALOG_STALE_MS,
+  });
+
+  const stages = useMemo(() => stagesQuery.data ?? [], [stagesQuery.data]);
+  const stageIds = stages.map((stage) => stage.id).join(",");
+
+  /* ──────────────────────────────── Contadores ────────────────────────────── */
+
+  /*
+   * Del backend, no de lo cargado: una columna con 400 fichas anuncia 400
+   * aunque en pantalla haya 25. Va en su propia consulta porque se invalida
+   * sola después de mover una ficha, sin tocar el tablero.
    */
-  const stateRef = useRef(state);
-  stateRef.current = state;
+  const countsQuery = useQuery({
+    queryKey: ["client-counts", filterKey],
+    queryFn: () => crmApi.stageCounts(JSON.parse(filterKey) as ClientFilters),
+    placeholderData: keepPreviousData,
+  });
 
-  const loadCatalogs = useCallback(async () => {
-    setState((prev) => ({ ...prev, catalogError: null }));
+  const counts = useMemo(() => countsQuery.data ?? {}, [countsQuery.data]);
 
-    // Se piden por separado a propósito: que falle el catálogo de etiquetas no
-    // puede dejar el tablero sin columnas. Cada uno degrada solo lo suyo.
-    const [stages, tags, team] = await Promise.all([
-      crmApi.stages(),
-      crmApi.tags().catch(() => [] as Tag[]),
-      crmApi.team().catch(() => [] as TeamMember[]),
-    ]);
+  /* ────────────────────────────────── Tablero ─────────────────────────────── */
 
-    setState((prev) => ({ ...prev, stages, tags, team }));
-  }, []);
-
-  const reloadCatalogs = useCallback(async () => {
-    try {
-      await loadCatalogs();
-    } catch (caught) {
-      // Antes esto era un `void loadCatalogs()` sin captura: la promesa se
-      // rechazaba sin manejar, `stages` quedaba vacío y el Kanban dibujaba cero
-      // columnas sin error, sin reintento y sin explicación.
-      setState((prev) => ({
-        ...prev,
-        catalogError:
-          caught instanceof ApiError
-            ? caught.message
-            : "No se pudieron cargar las etapas del tablero.",
-      }));
-    }
-  }, [loadCatalogs]);
-
-  const load = useCallback(
-    async (page = 1) => {
+  const boardQuery = useQuery({
+    queryKey: ["client-board", filterKey, stageIds, pagesByStage],
+    enabled: view === "kanban" && stages.length > 0,
+    placeholderData: keepPreviousData,
+    queryFn: async () => {
       const parsed = JSON.parse(filterKey) as ClientFilters;
-      const ticket = ++requestId.current;
-
-      setState((prev) => ({ ...prev, loading: true, error: null }));
-
-      try {
-        const counts = await crmApi.stageCounts(parsed);
-
-        if (view === "kanban") {
-          // El tablero necesita las etapas para saber qué pedir. Si todavía no
-          // llegaron, el efecto vuelve a correr cuando lleguen.
-          const stages = stateRef.current.stages;
-          const buckets = await Promise.all(
-            stages.map(async (stage) => {
-              const result = await crmApi.listClients({
-                ...parsed,
-                pipelineStageId: stage.id,
-                page: 1,
-                pageSize: KANBAN_PAGE_SIZE,
-              });
-              return [stage.id, { items: result.items, page: 1, loadingMore: false }] as const;
-            }),
-          );
-
-          if (ticket !== requestId.current) return;
-
-          setState((prev) => ({
-            ...prev,
-            board: Object.fromEntries(buckets),
-            counts,
-            total: sum(counts),
-            loading: false,
-          }));
-          return;
-        }
-
-        const result = await crmApi.listClients({
-          ...parsed,
-          page,
-          pageSize: LIST_PAGE_SIZE,
-        });
-
-        if (ticket !== requestId.current) return;
-
-        setState((prev) => ({
-          ...prev,
-          list: result.items,
-          page: result.page,
-          counts,
-          total: result.total,
-          loading: false,
-        }));
-      } catch (caught) {
-        if (ticket !== requestId.current) return;
-
-        setState((prev) => ({
-          ...prev,
-          loading: false,
-          error:
-            caught instanceof ApiError
-              ? caught.message
-              : "No se pudo cargar la cartera. Revisá tu conexión.",
-        }));
-      }
+      const buckets = await Promise.all(
+        stages.map(async (stage) => {
+          const pages = pagesByStage[stage.id] ?? 1;
+          const result = await crmApi.listClients({
+            ...parsed,
+            pipelineStageId: stage.id,
+            page: 1,
+            // Se vuelve a pedir desde la primera: una tanda más grande en vez de
+            // ir pegando páginas. Cuesta una petición por columna al pulsar
+            // "cargar más" y a cambio la columna siempre es coherente.
+            pageSize: KANBAN_PAGE_SIZE * pages,
+          });
+          return [stage.id, { items: result.items, page: pages, loadingMore: false }] as const;
+        }),
+      );
+      return Object.fromEntries(buckets) as Record<string, StageBucket>;
     },
-    [filterKey, view],
-  );
+  });
 
-  useEffect(() => {
-    void reloadCatalogs();
-  }, [reloadCatalogs]);
+  /* ─────────────────────────────────── Lista ──────────────────────────────── */
 
-  useEffect(() => {
-    // En el tablero se espera a tener las etapas: sin ellas no hay qué pedir.
-    if (view === "kanban" && state.stages.length === 0) return;
-    void load(1);
-    // `state.stages.length` entra a propósito: es el disparador de la primera
-    // carga del tablero cuando los catálogos llegan después que los filtros.
-  }, [load, view, state.stages.length]);
+  const listQuery = useQuery({
+    queryKey: ["client-list", filterKey, page],
+    enabled: view === "lista",
+    placeholderData: keepPreviousData,
+    queryFn: () =>
+      crmApi.listClients({
+        ...(JSON.parse(filterKey) as ClientFilters),
+        page,
+        pageSize: LIST_PAGE_SIZE,
+      }),
+  });
+
+  /* ─────────────────────────────── Acciones ───────────────────────────────── */
 
   /** Siguiente tanda de una columna · HU-CLI-08. */
-  const loadMore = useCallback(
-    async (stageId: string) => {
-      const parsed = JSON.parse(filterKey) as ClientFilters;
-      const bucket = stateRef.current.board[stageId];
-      if (!bucket || bucket.loadingMore) return;
-
-      setState((prev) => ({
-        ...prev,
-        board: { ...prev.board, [stageId]: { ...bucket, loadingMore: true } },
-      }));
-
-      try {
-        const next = bucket.page + 1;
-        const result = await crmApi.listClients({
-          ...parsed,
-          pipelineStageId: stageId,
-          page: next,
-          pageSize: KANBAN_PAGE_SIZE,
-        });
-
-        setState((prev) => {
-          const current = prev.board[stageId];
-          if (!current) return prev;
-          // Se filtran los repetidos: si alguien movió una ficha entre tandas, el
-          // desplazamiento se corre y una podría volver a llegar.
-          const known = new Set(current.items.map((c) => c.id));
-          return {
-            ...prev,
-            board: {
-              ...prev.board,
-              [stageId]: {
-                items: [...current.items, ...result.items.filter((c) => !known.has(c.id))],
-                page: next,
-                loadingMore: false,
-              },
-            },
-          };
-        });
-      } catch {
-        setState((prev) => {
-          const current = prev.board[stageId];
-          if (!current) return prev;
-          return {
-            ...prev,
-            board: { ...prev.board, [stageId]: { ...current, loadingMore: false } },
-          };
-        });
-      }
-    },
-    [filterKey],
-  );
+  const loadMore = useCallback((stageId: string) => {
+    setPagesByStage((prev) => ({ ...prev, [stageId]: (prev[stageId] ?? 1) + 1 }));
+  }, []);
 
   /**
    * Refresca solo los contadores · tras mover una ficha.
    *
    * Recargar el tablero entero después de cada arrastre eran nueve peticiones
-   * para un dato que ya está en pantalla: la tarjeta la reemplaza `patchClient` y
-   * el optimismo la dibuja donde va. Lo único que quedó desactualizado son los
-   * números de las columnas.
+   * para un dato que ya está en pantalla: la tarjeta la reemplaza `patchClient`
+   * y el optimismo la dibuja donde va. Lo único que quedó desactualizado son
+   * los números de las columnas.
    */
-  const refreshCounts = useCallback(async () => {
-    const parsed = JSON.parse(filterKey) as ClientFilters;
-    try {
-      const counts = await crmApi.stageCounts(parsed);
-      setState((prev) => ({
-        ...prev,
-        counts,
-        // En la lista el total lo manda la respuesta paginada, no la suma.
-        total: prev.list.length > 0 ? prev.total : sum(counts),
-      }));
-    } catch {
-      // Un contador desfasado no justifica molestar al usuario: se corrige solo
-      // en la próxima carga.
-    }
-  }, [filterKey]);
+  const refreshCounts = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: ["client-counts"] });
+  }, [queryClient]);
 
-  /** Reemplaza un expediente ya cargado tras una acción, sin recargar todo. */
-  const patchClient = useCallback((updated: ClientSummary) => {
-    setState((prev) => ({
-      ...prev,
-      list: prev.list.map((c) => (c.id === updated.id ? updated : c)),
-      board: Object.fromEntries(
-        Object.entries(prev.board).map(([stageId, bucket]) => [
-          stageId,
-          {
-            ...bucket,
-            items: bucket.items.map((c) => (c.id === updated.id ? updated : c)),
+  const reload = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: ["client-board"] });
+    void queryClient.invalidateQueries({ queryKey: ["client-list"] });
+    void queryClient.invalidateQueries({ queryKey: ["client-counts"] });
+  }, [queryClient]);
+
+  const reloadCatalogs = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: ["pipeline-stages"] });
+    void queryClient.invalidateQueries({ queryKey: ["tags"] });
+    void queryClient.invalidateQueries({ queryKey: ["team"] });
+  }, [queryClient]);
+
+  /**
+   * Reemplaza un expediente ya cargado tras una acción, sin recargar todo.
+   *
+   * Se escribe en la caché en vez de en un estado propio: así la ficha corregida
+   * sobrevive a cambiar de vista y volver, que antes la perdía.
+   */
+  const patchClient = useCallback(
+    (updated: ClientSummary) => {
+      queryClient.setQueriesData<Record<string, StageBucket>>(
+        { queryKey: ["client-board"] },
+        (board) =>
+          board &&
+          Object.fromEntries(
+            Object.entries(board).map(([stageId, bucket]) => [
+              stageId,
+              {
+                ...bucket,
+                items: bucket.items.map((c) => (c.id === updated.id ? updated : c)),
+              },
+            ]),
+          ),
+      );
+
+      queryClient.setQueriesData<{ items: ClientSummary[]; total: number; page: number }>(
+        { queryKey: ["client-list"] },
+        (result) =>
+          result && {
+            ...result,
+            items: result.items.map((c) => (c.id === updated.id ? updated : c)),
           },
-        ]),
-      ),
-    }));
-  }, []);
+      );
+    },
+    [queryClient],
+  );
+
+  const goToPage = useCallback((next: number) => setPage(next), []);
+
+  /* ─────────────────────────────── Resultado ──────────────────────────────── */
+
+  const active = view === "kanban" ? boardQuery : listQuery;
 
   return {
-    ...state,
-    reload: () => load(state.page),
+    stages,
+    tags: tagsQuery.data ?? [],
+    team: teamQuery.data ?? [],
+    board: boardQuery.data ?? {},
+    list: listQuery.data?.items ?? [],
+    page: listQuery.data?.page ?? page,
+    counts,
+    total: view === "lista" ? (listQuery.data?.total ?? 0) : sum(counts),
+    /*
+     * "Cargando" es la PRIMERA carga, no cualquier refresco: con
+     * `keepPreviousData` la pantalla sigue mostrando lo anterior mientras llega
+     * lo nuevo, y anunciar "Cargando…" encima de una tabla con datos solo la
+     * haría parpadear.
+     */
+    loading: active.isPending || countsQuery.isPending,
+    error: active.error ? message(active.error, "No se pudo cargar la cartera. Revisá tu conexión.") : null,
+    /** Falla de catálogos. Va aparte: sin etapas el tablero no tiene columnas. */
+    catalogError: stagesQuery.error
+      ? message(stagesQuery.error, "No se pudieron cargar las etapas del tablero.")
+      : null,
+    reload,
     reloadCatalogs,
     refreshCounts,
     loadMore,
-    goToPage: (page: number) => load(page),
+    goToPage,
     patchClient,
   };
 }
