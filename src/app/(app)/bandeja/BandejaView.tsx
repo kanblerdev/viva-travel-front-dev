@@ -791,19 +791,34 @@ const DELIVERY_MARK: Partial<Record<InboxMessage["deliveryStatus"], string>> = {
 /**
  * El motivo del fallo, dicho para quien atiende.
  *
- * Los errores de configuración llegan del servidor con el nombre de la variable
- * que falta: preciso para quien despliega, inútil para un asesor que solo
- * quiere saber si puede hacer algo. Se traducen a una acción concreta y el
- * texto técnico queda en el `title`, al alcance de quien lo necesite.
+ * El backend ya guarda el motivo traducido y con la acción que corresponde, así
+ * que lo normal es que este helper solo le ponga el prefijo. Sigue traduciendo
+ * por dos razones:
+ *
+ *  - los mensajes que ya están en los hilos guardaron el texto crudo de Meta,
+ *    en inglés ("Authentication Error"), y el historial también se lee;
+ *  - los errores de configuración llegan con el nombre de la variable que
+ *    falta: preciso para quien despliega, inútil para quien atiende.
+ *
+ * El texto técnico queda en el `title`, al alcance de quien lo necesite.
  */
 function failureNote(reason: string | null): string {
   if (!reason) return "No se envió";
+  return `No se envió · ${failureText(reason)}`;
+}
+
+function failureText(reason: string): string {
   if (/no está definida en el servidor|META_[A-Z_]+/.test(reason)) {
-    return "No se envió · falta conectar WhatsApp, avisale al administrador";
+    return "falta conectar WhatsApp, avisale al administrador";
   }
-  if (/no respondió|tiempo/i.test(reason)) return "No se envió · Meta no respondió a tiempo";
-  if (/límite|rate/i.test(reason)) return "No se envió · demasiados envíos seguidos, probá en un momento";
-  return `No se envió · ${reason}`;
+  if (/authentication error|access token|oauth/i.test(reason)) {
+    return "el token de WhatsApp venció, avisale al administrador";
+  }
+  if (/no respondió|tiempo de espera/i.test(reason)) return "Meta no respondió a tiempo";
+  if (/límite|rate limit/i.test(reason)) {
+    return "demasiados envíos seguidos, probá en un momento";
+  }
+  return reason;
 }
 
 function MessageBubble({ message }: { message: InboxMessage }) {
@@ -930,7 +945,7 @@ function Composer({
       setText("");
       onSent(message);
       if (message.deliveryStatus === "failed") {
-        setError(message.failureReason ?? "Meta rechazó el envío.");
+        setError(failureText(message.failureReason ?? "Meta rechazó el envío."));
       }
     } catch (caught) {
       setError(
@@ -985,7 +1000,7 @@ function Composer({
             setSharingQuote(false);
             onSent(message);
             if (message.deliveryStatus === "failed") {
-              setError(message.failureReason ?? "Meta rechazó el envío.");
+              setError(failureText(message.failureReason ?? "Meta rechazó el envío."));
             }
           }}
         />
@@ -997,7 +1012,7 @@ function Composer({
             setUsingTemplate(false);
             onSent(message);
             if (message.deliveryStatus === "failed") {
-              setError(message.failureReason ?? "Meta rechazó el envío.");
+              setError(failureText(message.failureReason ?? "Meta rechazó el envío."));
             }
           }}
         />
