@@ -780,6 +780,24 @@ const DELIVERY_MARK: Partial<Record<InboxMessage["deliveryStatus"], string>> = {
   queued: " · enviando…",
 };
 
+/**
+ * El motivo del fallo, dicho para quien atiende.
+ *
+ * Los errores de configuración llegan del servidor con el nombre de la variable
+ * que falta: preciso para quien despliega, inútil para un asesor que solo
+ * quiere saber si puede hacer algo. Se traducen a una acción concreta y el
+ * texto técnico queda en el `title`, al alcance de quien lo necesite.
+ */
+function failureNote(reason: string | null): string {
+  if (!reason) return "No se envió";
+  if (/no está definida en el servidor|META_[A-Z_]+/.test(reason)) {
+    return "No se envió · falta conectar WhatsApp, avisale al administrador";
+  }
+  if (/no respondió|tiempo/i.test(reason)) return "No se envió · Meta no respondió a tiempo";
+  if (/límite|rate/i.test(reason)) return "No se envió · demasiados envíos seguidos, probá en un momento";
+  return `No se envió · ${reason}`;
+}
+
 function MessageBubble({ message }: { message: InboxMessage }) {
   if (message.messageType === "system") {
     return <span className="thread-system">{message.text}</span>;
@@ -799,7 +817,7 @@ function MessageBubble({ message }: { message: InboxMessage }) {
    */
   const failed = message.direction === "outbound" && message.deliveryStatus === "failed";
 
-  return (
+  const bubble = (
     <div
       className={`bubble ${message.direction === "inbound" ? "in" : "out"}${failed ? " failed" : ""}`}
     >
@@ -822,18 +840,27 @@ function MessageBubble({ message }: { message: InboxMessage }) {
         </div>
       )}
       {message.text && <span style={{ whiteSpace: "pre-wrap" }}>{message.text}</span>}
-      {failed && (
-        <span className="bubble-failed">
-          <Icon name="target" width={11} height={11} />
-          <span>No se envió{message.failureReason ? `: ${message.failureReason}` : "."}</span>
-        </span>
-      )}
       <time className="meta" dateTime={message.occurredAt} title={absolute(message.occurredAt)}>
         {time}
         {message.direction === "outbound" && (DELIVERY_MARK[message.deliveryStatus] ?? "")}
         {message.sentOutsideCrm && " · enviado fuera del CRM"}
         {message.sentBy && ` · ${message.sentBy.fullName}`}
       </time>
+    </div>
+  );
+
+  // La nota del fallo va FUERA de la burbuja: dentro, su largo decidía el ancho
+  // del mensaje y un error de dos líneas hacía la burbuja más grande que
+  // cualquier respuesta enviada con éxito.
+  if (!failed) return bubble;
+
+  return (
+    <div className="bubble-failed-wrap">
+      {bubble}
+      <span className="bubble-failed" title={message.failureReason ?? undefined}>
+        <Icon name="target" width={10} height={10} />
+        <span>{failureNote(message.failureReason)}</span>
+      </span>
     </div>
   );
 }

@@ -594,6 +594,7 @@ table.t .th-sort.is-active svg { opacity: 1; color: var(--orange); }
   background: var(--orange); color: #fff; cursor: pointer;
   display: grid; place-items: center;
 }
+.composer .send svg { width: 16px; height: 16px; }
 .composer .send:disabled { background: var(--border); cursor: not-allowed; }
 /* Mientras el envío está en vuelo. El botón queda deshabilitado, así que sin
    esto no se distingue de "no hay nada escrito". */
@@ -616,7 +617,13 @@ table.t .th-sort.is-active svg { opacity: 1; color: var(--orange); }
 .composer-error svg { flex: none; margin-top: 2px; }
 
 /* Saliente que no salió. Se despinta del azul de "enviado" para que no se
-   confunda de un vistazo, y dice por qué debajo del texto. */
+   confunda de un vistazo; el motivo va debajo, fuera de la burbuja, para que
+   su largo no decida el ancho del mensaje. */
+.bubble-failed-wrap {
+  align-self: flex-end; max-width: 74%;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 3px;
+}
+.bubble-failed-wrap .bubble { max-width: 100%; }
 .bubble.out.failed {
   background: var(--red-bg, #FDF3F2);
   border: 1px solid var(--red-soft, #F3C9C4);
@@ -624,10 +631,15 @@ table.t .th-sort.is-active svg { opacity: 1; color: var(--orange); }
 }
 .bubble.out.failed .meta { color: var(--text-mute); }
 .bubble-failed {
-  display: flex; align-items: flex-start; gap: 5px;
-  margin-top: 6px; font-size: 11px; font-weight: 600; color: var(--red);
+  display: flex; align-items: center; gap: 4px;
+  padding: 0 3px;
+  font-size: 10px; font-weight: 600; color: var(--red);
+  max-width: 100%;
 }
-.bubble-failed svg { flex: none; margin-top: 2px; }
+.bubble-failed > span {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bubble-failed svg { flex: none; }
 
 .ctx { padding: 18px 16px; overflow-y: auto; }
 .ctx .who { text-align: center; margin-bottom: 18px; }
