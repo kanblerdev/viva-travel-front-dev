@@ -12,6 +12,7 @@ import {
   type ChannelsReport,
   type DashboardSummary,
   type FunnelReport,
+  type SaleSummary,
   type UtilityReport,
 } from "@/lib/api/crm";
 import { CHANNEL_LABEL, PIPELINE_STAGE_LABEL, type Channel } from "@/lib/domain/enums";
@@ -282,6 +283,8 @@ export function DashboardView() {
         tener el tablero. Acá va el resumen; el corte por fecha y la exportación
         viven en Reportes, que es adonde lleva el enlace.
       */}
+      <AlertasDeViaje />
+
       <AnalisisDelPeriodo advisorId={advisorId} />
     </>
   );
@@ -476,5 +479,88 @@ function AnalisisDelPeriodo({ advisorId }: { advisorId?: string }) {
         )}
       </div>
     </>
+  );
+}
+
+/* ──────────────── Alertas de viaje · acabado de Ventas ───────────────────── */
+
+/**
+ * Las dos llamadas que hay que hacer hoy.
+ *
+ * - **Sale pronto con saldo**: el viaje arranca dentro de siete días y el
+ *   cliente todavía debe. Después de la salida cobrar es mucho más difícil, así
+ *   que esta es la lista que hace ganar plata.
+ * - **Terminó y sigue en curso**: el regreso ya pasó y la venta no se cerró. No
+ *   es una deuda: es una venta que nadie terminó, y mientras siga abierta
+ *   ensucia todos los indicadores del período.
+ *
+ * Si no hay nada que avisar, la tarjeta no aparece. Un tablero con una sección
+ * que dice "todo bien" todos los días deja de mirarse.
+ */
+function AlertasDeViaje() {
+  const [alerts, setAlerts] = useState<{
+    departingWithBalance: SaleSummary[];
+    endedInProgress: SaleSummary[];
+  } | null>(null);
+
+  useEffect(() => {
+    crmApi.travelAlerts().then(setAlerts).catch(() => setAlerts(null));
+  }, []);
+
+  if (!alerts) return null;
+  const total = alerts.departingWithBalance.length + alerts.endedInProgress.length;
+  if (total === 0) return null;
+
+  return (
+    <div className="card" style={{ marginTop: 14 }}>
+      <div className="card-h">
+        <span className="ttl">Alertas de viaje</span>
+        <Link href="/ventas?vista=agenda" className="btn ghost tiny">
+          Agenda de cobro
+        </Link>
+      </div>
+
+      <div className="report-grid">
+        <div>
+          <p className="card-hint">
+            <b>Sale dentro de 7 días y todavía debe.</b> Después de la salida cobrar es
+            mucho más difícil.
+          </p>
+          {alerts.departingWithBalance.length === 0 ? (
+            <p className="barlist-empty">Ninguno.</p>
+          ) : (
+            <ul className="alert-list">
+              {alerts.departingWithBalance.map((sale) => (
+                <li key={sale.id}>
+                  <Link href={`/ventas/${sale.id}`}>{sale.code}</Link>
+                  <span>{sale.client?.name ?? "—"}</span>
+                  <b>{formatMoney(sale.balanceAmount)} USD</b>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div>
+          <p className="card-hint">
+            <b>El viaje terminó y la venta sigue en curso.</b> Nadie la cerró, y así
+            ensucia los indicadores del período.
+          </p>
+          {alerts.endedInProgress.length === 0 ? (
+            <p className="barlist-empty">Ninguna.</p>
+          ) : (
+            <ul className="alert-list">
+              {alerts.endedInProgress.map((sale) => (
+                <li key={sale.id}>
+                  <Link href={`/ventas/${sale.id}`}>{sale.code}</Link>
+                  <span>{sale.client?.name ?? "—"}</span>
+                  <b>{sale.destination}</b>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
