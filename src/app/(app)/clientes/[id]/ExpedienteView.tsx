@@ -10,10 +10,10 @@ import {
   type SetStateAction,
 } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Icon } from "@/components/Icon";
 import { RelativeTime } from "@/components/RelativeTime";
-import { TabPanel, Tabs } from "@/components/Tabs";
+import { TabPanel, Tabs, type TabOption } from "@/components/Tabs";
 import { EmailLinks, PhoneLinks } from "@/components/ContactLinks";
 import { SignedFileLink } from "@/components/SignedFileLink";
 import { useSession, type SessionUser } from "@/lib/auth/AuthProvider";
@@ -77,6 +77,31 @@ const TABS = [
 
 type TabId = (typeof TABS)[number]["id"];
 
+type TabCounts = { quotes: number; sales: number; conversations: number; files: number };
+
+/**
+ * Las pestañas con lo que hay detrás de cada una · `C7`.
+ *
+ * "Cotizaciones 3" ahorra el clic de entrar a ver si hay algo, que en un
+ * expediente recién creado son cuatro clics a pestañas vacías. `Datos
+ * generales` no lleva número: siempre tiene contenido.
+ */
+function TABS_WITH_COUNTS(counts: TabCounts | null): readonly TabOption<TabId>[] {
+  return TABS.map((tab) => ({
+    ...tab,
+    count:
+      counts === null || tab.id === "datos"
+        ? null
+        : tab.id === "cotizaciones"
+          ? counts.quotes
+          : tab.id === "ventas"
+            ? counts.sales
+            : tab.id === "conversaciones"
+              ? counts.conversations
+              : counts.files,
+  }));
+}
+
 const ACTION_LABEL: Record<string, string> = {
   created: "Expediente creado",
   updated: "Datos editados",
@@ -118,8 +143,33 @@ export function ExpedienteView({ clientId }: { clientId: string }) {
   const [team, setTeam] = useState<TeamMember[]>([]);
   const [loggingContact, setLoggingContact] = useState(false);
   const [discarding, setDiscarding] = useState(false);
-  const [tab, setTab] = useState<TabId>("datos");
   const [error, setError] = useState<string | null>(null);
+  const [counts, setCounts] = useState<TabCounts | null>(null);
+
+  /*
+   * La pestaña abierta vive en la URL · `C7`.
+   *
+   * Es lo que permite mandarle a un compañero "mirá las ventas de este
+   * expediente" pegando un enlace, y que el botón de atrás devuelva a la
+   * pestaña de la que se venía en vez de al principio. `datos` no se escribe:
+   * es la de entrada y ensuciaría cada URL.
+   */
+  const pathname = usePathname();
+  const params = useSearchParams();
+  const urlTab = params.get("seccion");
+  const tab: TabId = TABS.some((option) => option.id === urlTab)
+    ? (urlTab as TabId)
+    : "datos";
+
+  const setTab = useCallback(
+    (next: TabId) => {
+      const query = next === "datos" ? "" : `?seccion=${next}`;
+      // `replace`: cambiar de pestaña no es navegar a otra pantalla, y una
+      // entrada de historial por pestaña haría del botón de atrás un laberinto.
+      router.replace(`${pathname}${query}`, { scroll: false });
+    },
+    [router, pathname],
+  );
 
   const load = useCallback(async () => {
     setError(null);
@@ -141,6 +191,9 @@ export function ExpedienteView({ clientId }: { clientId: string }) {
       crmApi.team().then(setTeam).catch(() => undefined);
       // HU-CLI-10: igual de accesorio. Sin la sugerencia el expediente sirve.
       crmApi.clientDuplicates(clientId).then(setDuplicates).catch(() => setDuplicates([]));
+      // `C7`: los contadores de las pestañas. Si fallan, las pestañas se
+      // muestran sin número, que es como estaban antes.
+      crmApi.clientTabCounts(clientId).then(setCounts).catch(() => undefined);
     } catch (caught) {
       setError(
         caught instanceof ApiError && caught.status === 404
@@ -328,7 +381,7 @@ export function ExpedienteView({ clientId }: { clientId: string }) {
       )}
 
       <Tabs
-        options={TABS}
+        options={TABS_WITH_COUNTS(counts)}
         value={tab}
         onChange={setTab}
         label="Secciones del expediente"

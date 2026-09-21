@@ -9,6 +9,7 @@ import {
   isFollowUpOverdue,
   type ClientSummary,
   type PipelineStage,
+  type Tag,
 } from "@/lib/api/crm";
 import {
   CHANNEL_LABEL,
@@ -28,6 +29,8 @@ const CHANNEL_CLASS: Record<SourceChannel, string> = {
 
 type Props = {
   stages: PipelineStage[];
+  /** Catálogo de etiquetas: la ficha trae solo los ids (`C9`). */
+  tags: Tag[];
   /** Una tanda cargada por etapa. El total de cada una está en `counts`. */
   board: Record<string, StageBucket>;
   counts: Record<string, number>;
@@ -39,12 +42,15 @@ type Props = {
 
 export function KanbanBoard({
   stages,
+  tags,
   board,
   counts,
   onMove,
   onLoadMore,
   onRequestLost,
 }: Props) {
+  /** Nombre por id: la ficha trae `tagIds`, no los nombres. */
+  const tagById = useMemo(() => new Map(tags.map((tag) => [tag.id, tag])), [tags]);
   const [dragging, setDragging] = useState<string | null>(null);
   const [hoverStage, setHoverStage] = useState<string | null>(null);
   /** Etapa provisional mientras el backend confirma, para que la tarjeta no salte. */
@@ -167,6 +173,7 @@ export function KanbanBoard({
                   key={client.id}
                   client={client}
                   stages={stages}
+                  tagById={tagById}
                   currentStageId={stageOf(client)}
                   isDragging={dragging === client.id}
                   menuOpen={menuFor === client.id}
@@ -210,6 +217,7 @@ export function KanbanBoard({
 function OpportunityCard({
   client,
   stages,
+  tagById,
   currentStageId,
   isDragging,
   menuOpen,
@@ -221,6 +229,7 @@ function OpportunityCard({
 }: {
   client: ClientSummary;
   stages: PipelineStage[];
+  tagById: Map<string, Tag>;
   currentStageId: string;
   isDragging: boolean;
   menuOpen: boolean;
@@ -334,6 +343,32 @@ function OpportunityCard({
       <div className="trip">
         {client.destinations.length > 0 ? client.destinations.join(" · ") : "Sin destino"}
       </div>
+
+      {/*
+        Etiquetas en la tarjeta · `C9`.
+
+        Hasta ahora solo se veían abriendo el expediente, así que "VIP" o
+        "Luna de miel" —que es lo que decide a quién atender primero— no existía
+        para quien miraba el tablero. Se muestran las tres primeras: la tarjeta
+        tiene que seguir leyéndose de un vistazo.
+      */}
+      {client.tagIds.length > 0 && (
+        <div className="kcard-tags">
+          {client.tagIds.slice(0, 3).map((id) => {
+            const tag = tagById.get(id);
+            return tag ? (
+              <span key={id} className="chip tag-chip">
+                {tag.name}
+              </span>
+            ) : null;
+          })}
+          {client.tagIds.length > 3 && (
+            <span className="chip tag-chip is-more" title="Abrí el expediente para verlas todas">
+              +{client.tagIds.length - 3}
+            </span>
+          )}
+        </div>
+      )}
 
       {client.estimatedValue && (
         <div className="price">

@@ -1666,6 +1666,18 @@ table.t .th-sort.is-active svg { opacity: 1; color: var(--orange); }
   .merge-choice { grid-template-columns: 1fr; }
 }
 
+/* ===== Etiquetas en la tarjeta y en la fila · C9 =====
+ * Discretas a propósito: la tarjeta se tiene que seguir leyendo de un vistazo,
+ * y el nombre del cliente es lo que manda. Compiten con el destino y el monto,
+ * así que van en gris y en una línea propia. */
+.kcard-tags, .row-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.chip.tag-chip {
+  background: var(--bg-app); color: var(--text-mute);
+  border: 1px solid var(--border-soft);
+  font-size: 10px; font-weight: 600; padding: 1px 7px;
+}
+.chip.tag-chip.is-more { border-style: dashed; }
+
 /* ===== Carga, vacío y error · D7 =====
  * Los tres estados que el DoD exige en cada listado. La maqueta vive acá y no
  * en atributos `style`: cuatro módulos la traían repetida en línea y ya había

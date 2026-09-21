@@ -156,6 +156,13 @@ export type ClientFilters = {
   tagId?: string;
   destination?: string;
   pipelineStageId?: string;
+  /**
+   * Sin contacto hace tantos días o más · HU-CLI-06.
+   *
+   * Incluye a los que nunca se contactaron, que es lo que lo distingue de un
+   * rango por fecha de último contacto.
+   */
+  staleDays?: number;
   /** Seguimientos comprometidos hasta esta fecha, inclusive. Fecha ISO. */
   followUpUntil?: string;
   sortBy?: ClientSortField;
@@ -902,6 +909,18 @@ export const crmApi = {
 
   /** Candidatos a ser la misma persona. Solo sugiere: nada se une solo. */
   clientDuplicates: (id: string) => authed<DuplicateMatch[]>(`/clients/${id}/duplicados`),
+
+  /**
+   * Cuántos elementos tiene cada pestaña del expediente · `C7`.
+   *
+   * Un solo viaje: el backend cuenta por índice sin traer documentos. Pedir las
+   * cuatro listas con `pageSize: 1` para leer el total serían cuatro peticiones
+   * en cada apertura del expediente.
+   */
+  clientTabCounts: (id: string) =>
+    authed<{ quotes: number; sales: number; conversations: number; files: number }>(
+      `/clients/${id}/counts`,
+    ),
 
   /** Lo mismo para un alta que todavía no se guardó (`F2`). */
   probeDuplicates: (input: { fullName?: string; primaryPhone?: string; primaryEmail?: string }) =>
