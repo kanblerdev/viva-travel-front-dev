@@ -17,6 +17,7 @@ import {
   type ConversationView,
   type InboxMessage,
   type MessagingConnection,
+  type QuoteSummary,
   type SendableTemplate,
   type TeamMember,
 } from "@/lib/api/crm";
@@ -829,14 +830,17 @@ function MessageBubble({ message }: { message: InboxMessage }) {
             {MEDIA_LABEL[message.media.kind]}
             {message.media.filename ? `: ${message.media.filename}` : ""}
           </span>
-          {message.media.temporaryUrl ? (
+          {message.media.fileId ? (
+            <AttachmentLink fileId={message.media.fileId} />
+          ) : message.media.temporaryUrl ? (
+            // Respaldo: el enlace que Meta manda en el evento, que caduca en
+            // minutos. Solo queda cuando la descarga no pudo hacerse.
             <a href={message.media.temporaryUrl} target="_blank" rel="noreferrer">
               Abrir
             </a>
           ) : (
-            // Los adjuntos de WhatsApp se descargan con el token de Meta: la
-            // descarga llega con el envío (DM-10).
-            <span className="bubble-media-note">vista previa no disponible todavía</span>
+            // DM-10 deja fuera audio, video y stickers en la primera versión.
+            <span className="bubble-media-note">sin vista previa</span>
           )}
         </div>
       )}
@@ -892,6 +896,7 @@ function Composer({
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [usingTemplate, setUsingTemplate] = useState(false);
+  const [sharingQuote, setSharingQuote] = useState(false);
 
   const canSend = replyWindow.open && text.trim().length > 0 && !sending;
 
@@ -901,6 +906,14 @@ function Composer({
    * de dejar un campo deshabilitado que no explica qué hacer.
    */
   const windowClosed = conversation.channel === "whatsapp" && !replyWindow.open;
+
+  /*
+   * Compartir la cotización es un envío de texto libre con un PDF encima, así
+   * que vive bajo las mismas reglas: WhatsApp y ventana abierta. Fuera de eso ni
+   * se ofrece, porque el único camino es reabrir con una plantilla.
+   */
+  const canShareQuote =
+    conversation.channel === "whatsapp" && replyWindow.open && Boolean(conversation.client);
 
   async function send() {
     if (!canSend) return;
@@ -957,7 +970,20 @@ function Composer({
         </div>
       )}
 
-      {windowClosed && usingTemplate ? (
+      {canShareQuote && sharingQuote ? (
+        <QuoteSharer
+          conversationId={conversation.id}
+          clientId={conversation.client!.id}
+          onCancel={() => setSharingQuote(false)}
+          onSent={(message) => {
+            setSharingQuote(false);
+            onSent(message);
+            if (message.deliveryStatus === "failed") {
+              setError(message.failureReason ?? "Meta rechazó el envío.");
+            }
+          }}
+        />
+      ) : windowClosed && usingTemplate ? (
         <TemplatePicker
           conversationId={conversation.id}
           onCancel={() => setUsingTemplate(false)}
@@ -998,6 +1024,21 @@ function Composer({
             placeholder="Escribí tu respuesta…"
             aria-label="Mensaje"
           />
+          {canShareQuote && (
+            <button
+              type="button"
+              className="composer-attach"
+              aria-label="Compartir una cotización"
+              title="Compartir una cotización"
+              onClick={() => {
+                setError(null);
+                setSharingQuote(true);
+              }}
+              disabled={sending}
+            >
+              <Icon name="paperclip" />
+            </button>
+          )}
           <button
             type="button"
             className={sending ? "send is-sending" : "send"}
@@ -1009,6 +1050,221 @@ function Composer({
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Abrir un adjunto ya guardado en Storage · DM-10.
+ *
+ * La URL firmada se pide AL HACER CLIC y no al pintar el hilo: caduca a los
+ * quince minutos, y una pedida mientras se cargaban cien mensajes ya estaría
+ * vencida cuando el asesor llega a tocarla (misma lección que `SignedFileLink`).
+ *
+ * Es un enlace y no un botón con chrome propio porque vive dentro de una
+ * burbuja de chat, donde un botón con borde y fondo rompe la lectura.
+ */
+function AttachmentLink({ fileId }: { fileId: string }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(false);
+
+  async function open() {
+    setBusy(true);
+    setError(false);
+    try {
+      const file = await crmApi.fileUrl(fileId);
+      window.open(file.url, "_blank", "noopener");
+    } catch {
+      setError(true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (error) return <span className="bubble-media-note">no se pudo abrir</span>;
+
+  return (
+    <button type="button" className="bubble-media-open" onClick={() => void open()} disabled={busy}>
+      {busy ? "Abriendo…" : "Abrir"}
+    </button>
+  );
+}
+
+/* ──────────────────────── Compartir una cotización ────────────────────────── */
+
+/**
+ * Compartir una cotización por el hilo · HU-COT-10.
+ *
+ * Solo las del expediente de ESTA conversación, y solo las que se pueden
+ * compartir: una vencida llevaría al cliente un precio que ya caducó, y una
+ * aceptada o descartada ya no está en juego. El backend vuelve a comprobarlo.
+ *
+ * El PDF lo regenera el servidor desde la versión vigente, así que acá no hay
+ * archivo que elegir: solo cuál cotización y qué decirle al cliente.
+ */
+function QuoteSharer({
+  conversationId,
+  clientId,
+  onCancel,
+  onSent,
+}: {
+  conversationId: string;
+  clientId: string;
+  onCancel: () => void;
+  onSent: (message: InboxMessage) => void;
+}) {
+  const [quotes, setQuotes] = useState<QuoteSummary[] | null>(null);
+  const [selectedId, setSelectedId] = useState("");
+  const [message, setMessage] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    crmApi
+      .listQuotes({ clientId, pageSize: 50 })
+      .then((response) => {
+        if (!alive) return;
+        // Los mismos estados que acepta el backend al compartir: lo demás sería
+        // ofrecer un botón que termina en un 400.
+        const shareable = response.items.filter(
+          (quote) =>
+            !quote.isOverdue &&
+            (quote.status === "draft" ||
+              quote.status === "sent" ||
+              quote.status === "negotiation"),
+        );
+        setQuotes(shareable);
+        if (shareable[0]) setSelectedId(shareable[0].id);
+      })
+      .catch((caught: unknown) => {
+        if (!alive) return;
+        setQuotes([]);
+        setError(
+          caught instanceof ApiError ? caught.message : "No se pudieron cargar las cotizaciones.",
+        );
+      });
+    return () => {
+      alive = false;
+    };
+  }, [clientId]);
+
+  const selected = quotes?.find((quote) => quote.id === selectedId) ?? null;
+
+  async function share() {
+    if (!selected || sending) return;
+    setSending(true);
+    setError(null);
+    try {
+      onSent(await crmApi.shareQuote(conversationId, selected.id, message.trim() || undefined));
+    } catch (caught) {
+      setError(
+        caught instanceof ApiError
+          ? caught.message
+          : "No se pudo compartir. Revisá la conexión y probá de nuevo.",
+      );
+      setSending(false);
+    }
+  }
+
+  if (quotes === null) {
+    return <div className="composer-template">Buscando cotizaciones del expediente…</div>;
+  }
+
+  if (quotes.length === 0) {
+    return (
+      <div className="composer-template">
+        <p>
+          <b>Este expediente no tiene ninguna cotización para compartir.</b> Una vencida no se
+          comparte tal cual —sería mandarle un precio que ya caducó—: emití una versión nueva
+          con vigencia futura desde <b>Cotizaciones</b>.
+        </p>
+        {error && (
+          <div className="composer-error" role="alert">
+            <Icon name="target" width={12} height={12} />
+            <span>{error}</span>
+          </div>
+        )}
+        <button type="button" className="btn ghost tiny" onClick={onCancel}>
+          Volver
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="composer-template">
+      {error && (
+        <div className="composer-error" role="alert">
+          <Icon name="target" width={12} height={12} />
+          <span>{error}</span>
+        </div>
+      )}
+
+      <label className="composer-template-label" htmlFor="quote-choice">
+        Cotización
+      </label>
+      <select
+        id="quote-choice"
+        value={selectedId}
+        onChange={(event) => {
+          setSelectedId(event.target.value);
+          setError(null);
+        }}
+        disabled={sending}
+      >
+        {quotes.map((quote) => (
+          <option key={quote.id} value={quote.id}>
+            {quote.code}
+            {quote.destination ? ` · ${quote.destination}` : ""} ·{" "}
+            {formatMoney(quote.finalPrice)} · {QUOTE_STATUS_LABEL[quote.status]}
+          </option>
+        ))}
+      </select>
+
+      <div>
+        <label className="composer-template-label" htmlFor="quote-message">
+          Mensaje que la acompaña
+        </label>
+        <input
+          id="quote-message"
+          value={message}
+          onChange={(event) => setMessage(event.target.value)}
+          maxLength={900}
+          disabled={sending}
+          placeholder={selected ? `Cotización ${selected.code}` : "Le comparto la cotización…"}
+          autoComplete="off"
+        />
+      </div>
+
+      {selected && (
+        <div className="composer-template-preview">
+          <span>Se enviará</span>
+          <p>
+            📄 {selected.code}.pdf
+            {"\n"}
+            {message.trim() || `Cotización ${selected.code}`}
+          </p>
+        </div>
+      )}
+
+      <p style={{ fontSize: 11 }}>
+        Compartirla la da por <b>enviada</b>, igual que mandarla por correo.
+      </p>
+
+      <div className="composer-template-actions">
+        <button
+          type="button"
+          className="btn primary tiny"
+          onClick={() => void share()}
+          disabled={!selected || sending}
+        >
+          {sending ? "Compartiendo…" : "Compartir cotización"}
+        </button>
+        <button type="button" className="btn ghost tiny" onClick={onCancel} disabled={sending}>
+          Cancelar
+        </button>
+      </div>
     </div>
   );
 }

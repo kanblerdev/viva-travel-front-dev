@@ -307,13 +307,15 @@ export const SOURCE_CHANNEL_LABEL: Record<SourceChannel, string> = {
   other: "Otro",
 };
 
-export const INTEGRATION_STATUSES = ["connected", "pending", "error"] as const;
+export const INTEGRATION_STATUSES = ["connected", "pending", "error", "disabled"] as const;
 export type IntegrationStatus = (typeof INTEGRATION_STATUSES)[number];
 
 export const INTEGRATION_STATUS_LABEL: Record<IntegrationStatus, string> = {
   connected: "Conectado",
   pending: "Pendiente",
   error: "Error",
+  /** Desactivación lógica: el webhook descarta sus eventos y no se puede enviar. */
+  disabled: "Dada de baja",
 };
 
 /* ──────────────────────────────── Mensajes ────────────────────────────────── */

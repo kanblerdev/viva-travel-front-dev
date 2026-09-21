@@ -718,7 +718,15 @@ export type InboxMessage = {
     kind: "image" | "video" | "audio" | "sticker" | "document";
     mimeType: string | null;
     filename: string | null;
-    /** Messenger e Instagram: enlace que Meta manda y que caduca. */
+    /**
+     * Archivo ya guardado en Storage · DM-10.
+     *
+     * Con esto se pide una URL firmada cuando el asesor quiere verlo. Es `null`
+     * para los tipos que DM-10 deja fuera de la primera versión —audio, video,
+     * stickers— y cuando la descarga no pudo hacerse.
+     */
+    fileId: string | null;
+    /** Messenger e Instagram: enlace que Meta manda y que caduca en minutos. */
     temporaryUrl: string | null;
   } | null;
   deliveryStatus: DeliveryStatus;
@@ -1188,6 +1196,19 @@ export const crmApi = {
     authed<InboxMessage>(`/conversations/${id}/messages`, {
       method: "POST",
       body: { text },
+    }),
+
+  /**
+   * Compartir una cotización por el hilo · HU-COT-10.
+   *
+   * El backend regenera el PDF de la versión vigente y lo manda como documento.
+   * Solo WhatsApp y solo con la ventana abierta: fuera de ella responde 409.
+   * Si Meta lo acepta, la cotización queda como enviada.
+   */
+  shareQuote: (id: string, quoteId: string, message?: string) =>
+    authed<InboxMessage>(`/conversations/${id}/cotizacion`, {
+      method: "POST",
+      body: { quoteId, ...(message ? { message } : {}) },
     }),
 
   /** Aprobadas en la cuenta de este hilo · HU-HSM-03. Vacío fuera de WhatsApp. */

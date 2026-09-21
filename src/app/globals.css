@@ -664,6 +664,9 @@ table.t .th-sort.is-active svg { opacity: 1; color: var(--orange); }
   font-size: 13px; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere;
 }
 .composer-template-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+/* El panel es una columna flex: sin esto, un botón suelto —el "Volver" del
+   estado vacío— se estira a todo el ancho y parece un campo de texto. */
+.composer-template > .btn { align-self: flex-start; }
 
 @media (max-width: 700px) {
   .composer-template-vars { grid-template-columns: 1fr; }
@@ -748,6 +751,24 @@ table.t .th-sort.is-active svg { opacity: 1; color: var(--orange); }
 .bubble-media svg { width: 13px; height: 13px; flex: none; }
 .bubble-media a { color: inherit; text-decoration: underline; }
 .bubble-media-note { font-weight: 400; opacity: 0.75; }
+/* Abrir el adjunto guardado: se lee como el enlace de al lado, no como un botón
+   con chrome propio, que dentro de una burbuja rompe la lectura. */
+.bubble-media-open {
+  border: 0; padding: 0; background: none; cursor: pointer;
+  font: inherit; color: inherit; text-decoration: underline;
+}
+.bubble-media-open:disabled { cursor: default; opacity: 0.7; text-decoration: none; }
+
+/* Adjuntar una cotización, al lado del campo de respuesta. */
+.composer-attach {
+  width: 40px; height: 40px; flex: none;
+  border: 1px solid var(--border); border-radius: 9px;
+  background: var(--white); color: var(--text-mute); cursor: pointer;
+  display: grid; place-items: center;
+}
+.composer-attach:hover { color: var(--orange); border-color: var(--orange); }
+.composer-attach svg { width: 16px; height: 16px; }
+.composer-attach:disabled { opacity: 0.55; cursor: not-allowed; }
 .ctx-link { color: var(--text); text-decoration: none; }
 .ctx-link:hover { color: var(--orange-deep); }
 .ctx-duplicates {
