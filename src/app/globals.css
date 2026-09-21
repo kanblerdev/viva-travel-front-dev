@@ -32,6 +32,13 @@
   --purple-bg: #EEEAFE;
   --blue: #2A6FDB;
   --blue-bg: #E5EFFC;
+
+  /* Color de las barras de los reportes · guía de visualización.
+     Un solo hue: el largo ya dice la magnitud, y repetirla en el color gasta el
+     canal que necesita la identidad. Verificado contra la superficie blanca de
+     la tarjeta (3:1 para marcas). */
+  --chart-bar: #2A78D6;
+  --chart-track: #EEF3FA;
 }
 
 * { box-sizing: border-box; }
@@ -1676,6 +1683,41 @@ table.t .th-sort.is-active svg { opacity: 1; color: var(--orange); }
 }
 /* La misma aclaración cuando lo que dice es un problema. */
 .field-hint.is-error { color: var(--red); }
+
+/* Título y aclaración de una tarjeta de reporte. */
+.card-title { font-size: 14px; font-weight: 700; color: var(--text); margin: 0 0 4px; }
+.card-hint { margin: 0 0 14px; font-size: 12px; color: var(--text-mute); line-height: 1.6; }
+.card-hint b { color: var(--text); }
+
+/* Dos reportes lado a lado: embudo + pérdidas, ventas + conversaciones. */
+.report-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+@media (max-width: 1000px) {
+  .report-grid { grid-template-columns: 1fr; }
+}
+
+/* ===== Barras de los reportes · wireframe 11 =====
+ * Marcas finas, pista de fondo casi al ras de la superficie y sin rejilla: la
+ * cifra va al final de cada barra, así que una rejilla solo agregaría ruido. */
+.barlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
+.barlist-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  margin-bottom: 5px;
+}
+.barlist-label { font-size: 13px; font-weight: 600; color: var(--text); min-width: 0; }
+.barlist-label .chip { margin-right: 6px; }
+.barlist-value {
+  font-size: 13px; font-weight: 700; color: var(--text);
+  font-variant-numeric: tabular-nums; flex: none;
+}
+.barlist-track {
+  height: 10px; border-radius: 999px;
+  background: var(--chart-track);
+  overflow: hidden;
+}
+/* Extremo redondeado y anclado al cero: la barra nace en el eje, no flota. */
+.barlist-fill { height: 100%; border-radius: 0 4px 4px 0; background: var(--chart-bar); }
+.barlist-note { margin-top: 5px; font-size: 11px; color: var(--text-mute); }
+.barlist-empty { margin: 0; padding: 22px 0; font-size: 13px; color: var(--text-mute); text-align: center; }
 
 /* ===== Etiquetas en la tarjeta y en la fila · C9 =====
  * Discretas a propósito: la tarjeta se tiene que seguir leyendo de un vistazo,
