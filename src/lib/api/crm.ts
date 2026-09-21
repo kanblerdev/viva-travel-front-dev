@@ -67,6 +67,79 @@ export type TeamMember = {
   role: UserRole;
 };
 
+/* ── Reportes · HU-REP-01 a HU-REP-06 ──────────────────────────────────────── */
+
+export type ReportPeriod = { from: string; to: string };
+
+export type ReportFilters = {
+  from?: string;
+  to?: string;
+  advisorId?: string;
+  groupBy?: "destination" | "agency" | "advisor";
+};
+
+/** Una fila del desglose de utilidad: un destino, una agencia o un asesor. */
+export type UtilityRow = {
+  key: string | null;
+  label: string;
+  salesCount: number;
+  revenue: string;
+  utility: string;
+  /** Utilidad ÷ vendido. `null` si no hubo ventas (DM-08: no hay costo). */
+  marginPercent: number | null;
+};
+
+export type UtilityReport = {
+  period: ReportPeriod;
+  /** `null` = toda la agencia. Un Asesor siempre recibe el suyo (DM-19). */
+  advisorId: string | null;
+  totals: {
+    salesCount: number;
+    revenue: string;
+    managementCommission: string;
+    agencyCommission: string;
+    utility: string;
+    marginPercent: number | null;
+  };
+  groupBy: NonNullable<ReportFilters["groupBy"]>;
+  breakdown: UtilityRow[];
+};
+
+export type PerformanceRow = {
+  advisor: { id: string; fullName: string; role: UserRole; status: string };
+  quotesSent: number;
+  salesCount: number;
+  revenue: string;
+  utility: string;
+  marginPercent: number | null;
+  /** Fracción 0–1. Puede pasar de 1 (DM-03). */
+  closeRate: number | null;
+};
+
+export type PerformanceReport = { period: ReportPeriod; rows: PerformanceRow[] };
+
+export type FunnelReport = {
+  period: ReportPeriod;
+  /**
+   * En el orden del tablero, y ACUMULADO: `count` es cuántos alcanzaron la
+   * etapa, no cuántos están parados en ella. Contando la ocupación actual la
+   * serie no decrece y el porcentaje entre pasos no significa nada.
+   */
+  stages: { code: PipelineStageCode; name: string; count: number; current: number }[];
+  /** La fuga. No es un escalón del embudo: se sale de él. */
+  lost: number;
+  lostReasons: { id: string | null; code: string | null; name: string; count: number }[];
+  stageNames: Record<string, string>;
+};
+
+export type ChannelsReport = {
+  period: ReportPeriod;
+  sales: { channel: string; count: number; revenue: string }[];
+  conversations: { channel: Channel; conversations: number; messages: number }[];
+};
+
+export type ReportCatalogItem = { kind: string; label: string; description: string };
+
 export type ClientSummary = {
   id: string;
   fullName: string;
@@ -200,7 +273,14 @@ export type UpdateClientInput = {
     destinations?: string[];
     interests?: string[];
     notes?: string | null;
-  };
+    /**
+   * `updatedAt` que la pantalla leyó al empezar a editar · `D5`.
+   *
+   * Si el expediente cambió desde entonces, el backend responde 409 en vez de
+   * pisar el trabajo de la otra persona.
+   */
+  expectedUpdatedAt?: string;
+};
   internalNotes?: string | null;
   estimatedValue?: string | null;
 };
@@ -918,9 +998,20 @@ export const crmApi = {
    * en cada apertura del expediente.
    */
   clientTabCounts: (id: string) =>
-    authed<{ quotes: number; sales: number; conversations: number; files: number }>(
-      `/clients/${id}/counts`,
-    ),
+    authed<{
+      quotes: number;
+      sales: number;
+      conversations: number;
+      files: number;
+      /** Cotizado, vendido y saldo del expediente · `F5`, HU-EXP-01. */
+      economics: {
+        quotedAmount: string;
+        quotedCount: number;
+        soldAmount: string;
+        soldCount: number;
+        outstandingAmount: string;
+      };
+    }>(`/clients/${id}/counts`),
 
   /** Lo mismo para un alta que todavía no se guardó (`F2`). */
   probeDuplicates: (input: { fullName?: string; primaryPhone?: string; primaryEmail?: string }) =>
@@ -1245,6 +1336,59 @@ export const crmApi = {
     authed<InboxMessage>(`/conversations/${id}/plantilla`, {
       method: "POST",
       body: { templateId, values },
+    }),
+  /* ── Reportes · HU-REP-01 a HU-REP-06 ────────────────────────────────────── */
+
+  /** Qué reportes puede ver quien pregunta: la pantalla no ofrece un 403. */
+  reportCatalog: () => authed<{ items: ReportCatalogItem[] }>("/reports"),
+
+  utilityReport: (filters: ReportFilters = {}) =>
+    authed<UtilityReport>(`/reports/utilidad${toQuery(filters)}`),
+
+  /** Solo Gerente y Administrador: el Asesor recibe 403 (HU-REP-02). */
+  performanceReport: (filters: ReportFilters = {}) =>
+    authed<PerformanceReport>(`/reports/desempeno${toQuery(filters)}`),
+
+  funnelReport: (filters: ReportFilters = {}) =>
+    authed<FunnelReport>(`/reports/embudo${toQuery(filters)}`),
+
+  channelsReport: (filters: ReportFilters = {}) =>
+    authed<ChannelsReport>(`/reports/canales${toQuery(filters)}`),
+
+  /** Las dos listas de acción del acabado de Ventas. */
+  travelAlerts: () =>
+    authed<{ departingWithBalance: SaleSummary[]; endedInProgress: SaleSummary[] }>(
+      "/reports/alertas-viaje",
+    ),
+
+  /**
+   * Descarga el XLSX de un reporte · HU-REP-06, DM-12.
+   *
+   * Pasa por el API y no por un enlace directo: la descarga necesita la sesión,
+   * y el backend aplica los mismos permisos que la pantalla.
+   */
+  downloadReport: async (kind: string, filters: ReportFilters = {}) => {
+    const token = await getIdToken();
+    if (!token) throw new Error("La sesión expiró. Volvé a iniciar sesión.");
+    return apiDownload(`/reports/${kind}/xlsx${toQuery(filters)}`, token);
+  },
+
+  /** La cartera filtrada, con los mismos filtros del listado · `F6`. */
+  downloadClients: async (filters: ClientFilters = {}) => {
+    const token = await getIdToken();
+    if (!token) throw new Error("La sesión expiró. Volvé a iniciar sesión.");
+    return apiDownload(`/clients/xlsx${toQuery(filters)}`, token);
+  },
+
+  /** Reasignar o etiquetar varios expedientes · `F3`, HU-CLI-04. */
+  bulkUpdateClients: (input: {
+    clientIds: string[];
+    advisorId?: string | null;
+    addTagIds?: string[];
+  }) =>
+    authed<{ applied: number; skipped: number; total: number }>("/clients/lote", {
+      method: "POST",
+      body: input,
     }),
 };
 

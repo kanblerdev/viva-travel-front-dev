@@ -54,6 +54,8 @@ const kLabelStyle = {
 /* ─────────────────────── Edición en línea · HU-EXP-02 ─────────────────────── */
 
 type InlineEdit<T> = {
+  /** El guardado chocó con una edición ajena (409) · `D5`. */
+  conflict: boolean;
   draft: T;
   setDraft: Dispatch<SetStateAction<T>>;
   editing: boolean;
@@ -76,6 +78,14 @@ function useInlineEdit<T>(current: T, save: (draft: T) => Promise<void>): Inline
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * El guardado chocó con una edición ajena · `D5`.
+   *
+   * Se distingue de cualquier otro error porque la salida es distinta: los demás
+   * se arreglan corrigiendo el campo; este solo se arregla viendo primero qué
+   * cambió el otro.
+   */
+  const [conflict, setConflict] = useState(false);
 
   return {
     draft,
@@ -83,19 +93,23 @@ function useInlineEdit<T>(current: T, save: (draft: T) => Promise<void>): Inline
     editing,
     saving,
     error,
+    conflict,
     start: () => {
       setDraft(current);
       setError(null);
+      setConflict(false);
       setEditing(true);
     },
     cancel: () => {
       setEditing(false);
       setError(null);
+      setConflict(false);
     },
     submit: async (event: FormEvent) => {
       event.preventDefault();
       setSaving(true);
       setError(null);
+      setConflict(false);
       try {
         await save(draft);
         setEditing(false);
@@ -105,6 +119,9 @@ function useInlineEdit<T>(current: T, save: (draft: T) => Promise<void>): Inline
         setError(
           caught instanceof ApiError ? caught.message : "No se pudo guardar el cambio.",
         );
+        // 409 es la precondición de `D5`: alguien editó mientras esto estaba
+        // abierto. No se pierde lo escrito — el borrador sigue en pantalla.
+        setConflict(caught instanceof ApiError && caught.status === 409);
       } finally {
         setSaving(false);
       }
@@ -146,7 +163,25 @@ function EditableCard<T>({
           {edit.error && (
             <div className="auth-alert error" style={{ marginBottom: 14 }} role="alert">
               <Icon name="target" />
-              <div>{edit.error}</div>
+              <div>
+                {edit.error}
+                {/*
+                  Un conflicto necesita una SALIDA, no solo un mensaje · `D5`.
+                  Los demás errores se arreglan corrigiendo el campo; este solo se
+                  arregla viendo antes qué cambió el otro. Lo escrito sigue en
+                  pantalla hasta que se decida recargar.
+                */}
+                {edit.conflict && (
+                  <button
+                    type="button"
+                    className="btn ghost tiny"
+                    style={{ marginTop: 8 }}
+                    onClick={() => window.location.reload()}
+                  >
+                    Recargar el expediente
+                  </button>
+                )}
+              </div>
             </div>
           )}
 

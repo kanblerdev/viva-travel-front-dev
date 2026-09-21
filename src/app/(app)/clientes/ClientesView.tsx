@@ -20,6 +20,7 @@ import {
   type ClientSummary,
   type PipelineStage,
   type Tag,
+  type TeamMember,
 } from "@/lib/api/crm";
 import {
   PIPELINE_STAGE_COLOR,
@@ -130,6 +131,10 @@ export function ClientesView() {
   const debouncedSearch = useDebouncedValue(search, 300);
 
   const [showNew, setShowNew] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [bulkNotice, setBulkNotice] = useState<string | null>(null);
+  /** Expedientes marcados en la lista · `F3`. Se vacía al cambiar de filtro. */
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [lostTarget, setLostTarget] = useState<ClientSummary | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -181,6 +186,43 @@ export function ClientesView() {
   }, [debouncedSearch, filters, apply, view]);
 
   const setView = useCallback((next: View) => apply(filters, next), [apply, filters]);
+
+  /*
+   * Al cambiar el filtro se vacía la selección · `F3`.
+   *
+   * Sin esto quedarían marcados expedientes que ya no están en pantalla, y la
+   * acción en lote se aplicaría sobre gente que quien la lanzó no está viendo.
+   */
+  useEffect(() => {
+    setSelected(new Set());
+  }, [urlKey]);
+
+  /**
+   * Exporta la cartera filtrada · `F6`, HU-REP-06.
+   *
+   * Manda los MISMOS filtros que la pantalla, así que el archivo y la tabla
+   * dicen lo mismo. El backend vuelve a aplicar los permisos: exportar no puede
+   * ver más de lo que se ve.
+   */
+  async function exportarCartera() {
+    setExporting(true);
+    setActionError(null);
+    try {
+      const blob = await crmApi.downloadClients(query);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "cartera.xlsx";
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (caught) {
+      setActionError(
+        caught instanceof ApiError ? caught.message : "No se pudo generar el archivo.",
+      );
+    } finally {
+      setExporting(false);
+    }
+  }
 
   function clearFilters() {
     setSearch("");
@@ -352,6 +394,18 @@ export function ClientesView() {
           </button>
         )}
 
+        {/* F6 · lo que se exporta es EXACTAMENTE lo que está filtrado. */}
+        <button
+          type="button"
+          className="selectfilter"
+          onClick={() => void exportarCartera()}
+          disabled={exporting}
+          title="Exportar la cartera filtrada a Excel"
+        >
+          <Icon name="download" />
+          {exporting ? "Generando…" : "Exportar"}
+        </button>
+
         <span className="count">
           {data.loading ? "Cargando…" : `${data.total} oportunidades`}
         </span>
@@ -421,6 +475,57 @@ export function ClientesView() {
         </div>
       ) : (
         <TabPanel id={view} idPrefix="clientes">
+          {/*
+            La barra aparece solo con algo marcado · `F3`.
+            Fija arriba del listado, no flotando sobre el contenido: la acción
+            se decide mirando la tabla, y un panel que la tape obliga a cerrarlo
+            para comprobar qué se seleccionó.
+          */}
+          {bulkNotice && (
+            <div className="auth-alert success" style={{ marginBottom: 12 }} role="status">
+              <Icon name="check" />
+              <div>{bulkNotice}</div>
+              <button
+                type="button"
+                className="btn ghost tiny"
+                style={{ marginLeft: "auto" }}
+                onClick={() => setBulkNotice(null)}
+              >
+                Cerrar
+              </button>
+            </div>
+          )}
+
+          {view === "lista" && selected.size > 0 && (
+            <BulkBar
+              count={selected.size}
+              team={data.team}
+              tags={data.tags}
+              canReassign={user?.role !== "advisor"}
+              onCancel={() => setSelected(new Set())}
+              onApply={async (input) => {
+                const result = await crmApi.bulkUpdateClients({
+                  clientIds: [...selected],
+                  ...input,
+                });
+                /*
+                 * El aviso lo muestra el PADRE, no la barra: limpiar la
+                 * selección desmonta la barra, y con ella se iba el mensaje que
+                 * decía cuántos se habían actualizado.
+                 */
+                setBulkNotice(
+                  result.skipped > 0
+                    ? `${result.applied} de ${result.total} expedientes actualizados · ${result.skipped} sin cambios o de otro asesor`
+                    : `${result.applied} expediente${result.applied === 1 ? "" : "s"} actualizado${
+                        result.applied === 1 ? "" : "s"
+                      }`,
+                );
+                setSelected(new Set());
+                data.reload();
+              }}
+            />
+          )}
+
           {view === "kanban" ? (
             <KanbanBoard
               stages={data.stages}
@@ -440,6 +545,22 @@ export function ClientesView() {
                 sort={sort}
                 onSort={toggleSort}
                 onRequestLost={setLostTarget}
+                selected={selected}
+                onToggleOne={(id) =>
+                  setSelected((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(id)) next.delete(id);
+                    else next.add(id);
+                    return next;
+                  })
+                }
+                onToggleAll={() =>
+                  setSelected((prev) =>
+                    data.list.every((c) => prev.has(c.id))
+                      ? new Set()
+                      : new Set(data.list.map((c) => c.id)),
+                  )
+                }
               />
               <Paginacion
                 page={data.page}
@@ -582,6 +703,9 @@ function ClientTable({
   sort,
   onSort,
   onRequestLost,
+  selected,
+  onToggleOne,
+  onToggleAll,
 }: {
   clients: ClientSummary[];
   stageById: Map<string, PipelineStage>;
@@ -589,13 +713,32 @@ function ClientTable({
   sort: ClientSort | null;
   onSort: (field: ClientSortField) => void;
   onRequestLost: (client: ClientSummary) => void;
+  selected: Set<string>;
+  onToggleOne: (id: string) => void;
+  onToggleAll: () => void;
 }) {
+  const allChecked = clients.length > 0 && clients.every((c) => selected.has(c.id));
+  const someChecked = clients.some((c) => selected.has(c.id));
+
   return (
     <div className="card" style={{ padding: 0, overflow: "hidden" }}>
       <div style={{ overflowX: "auto" }}>
         <table className="t">
           <thead>
             <tr>
+              <th style={{ width: 34 }}>
+                <input
+                  type="checkbox"
+                  aria-label="Seleccionar todo lo que se ve"
+                  checked={allChecked}
+                  ref={(node) => {
+                    // Indeterminado cuando hay algunos: decir "ninguno" con una
+                    // casilla vacía cuando hay tres marcados sería mentir.
+                    if (node) node.indeterminate = someChecked && !allChecked;
+                  }}
+                  onChange={onToggleAll}
+                />
+              </th>
               <SortableTh field="name" label="Nombre" sort={sort} onSort={onSort} />
               <SortableTh field="channel" label="Canal" sort={sort} onSort={onSort} />
               <th>Responsable</th>
@@ -610,7 +753,15 @@ function ClientTable({
             {clients.map((client) => {
               const stage = stageById.get(client.pipelineStageId);
               return (
-                <tr key={client.id}>
+                <tr key={client.id} className={selected.has(client.id) ? "is-selected" : undefined}>
+                  <td data-label="">
+                    <input
+                      type="checkbox"
+                      aria-label={`Seleccionar ${client.fullName}`}
+                      checked={selected.has(client.id)}
+                      onChange={() => onToggleOne(client.id)}
+                    />
+                  </td>
                   <td>
                     <span className="cell-name">
                       <span className="avatar o1">{client.initials}</span>
@@ -707,6 +858,118 @@ function ClientTable({
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+/* ───────────────────── Acciones en lote · F3, HU-CLI-04 ───────────────────── */
+
+/**
+ * Reasignar o etiquetar lo marcado.
+ *
+ * Las dos acciones que el gerente hace de verdad en tanda: repartir la cartera
+ * de alguien que se fue y clasificar a los que preguntaron por lo mismo. Una por
+ * una son doce confirmaciones y doce recargas.
+ *
+ * Reasignar solo se ofrece a Gerente y Administrador (matriz 4.2); el backend lo
+ * vuelve a comprobar. Las etiquetas se AGREGAN: un lote que las reemplazara
+ * borraría en silencio la clasificación de otro.
+ */
+function BulkBar({
+  count,
+  team,
+  tags,
+  canReassign,
+  onCancel,
+  onApply,
+}: {
+  count: number;
+  team: TeamMember[];
+  tags: Tag[];
+  canReassign: boolean;
+  onCancel: () => void;
+  onApply: (input: { advisorId?: string | null; addTagIds?: string[] }) => Promise<void>;
+}) {
+  const [advisorId, setAdvisorId] = useState("");
+  const [tagId, setTagId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const nothingChosen = advisorId === "" && tagId === "";
+
+  async function apply() {
+    setBusy(true);
+    setError(null);
+    try {
+      await onApply({
+        ...(advisorId ? { advisorId: advisorId === "unassigned" ? null : advisorId } : {}),
+        ...(tagId ? { addTagIds: [tagId] } : {}),
+      });
+    } catch (caught) {
+      setError(
+        caught instanceof ApiError ? caught.message : "No se pudo aplicar el cambio.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="bulkbar" role="group" aria-label="Acciones sobre lo seleccionado">
+      <b>
+        {count} seleccionado{count === 1 ? "" : "s"}
+      </b>
+
+      {canReassign && (
+        <select
+          className="selectfilter"
+          value={advisorId}
+          onChange={(event) => setAdvisorId(event.target.value)}
+          disabled={busy}
+          aria-label="Reasignar a"
+        >
+          <option value="">Reasignar a…</option>
+          <option value="unassigned">Dejar sin asignar</option>
+          {team.map((member) => (
+            <option key={member.id} value={member.id}>
+              {member.fullName}
+            </option>
+          ))}
+        </select>
+      )}
+
+      <select
+        className="selectfilter"
+        value={tagId}
+        onChange={(event) => setTagId(event.target.value)}
+        disabled={busy}
+        aria-label="Agregar etiqueta"
+      >
+        <option value="">Agregar etiqueta…</option>
+        {tags.map((tag) => (
+          <option key={tag.id} value={tag.id}>
+            {tag.name}
+          </option>
+        ))}
+      </select>
+
+      <button
+        type="button"
+        className="btn primary tiny"
+        onClick={() => void apply()}
+        disabled={busy || nothingChosen}
+      >
+        {busy ? "Aplicando…" : "Aplicar"}
+      </button>
+      <button type="button" className="btn ghost tiny" onClick={onCancel} disabled={busy}>
+        Cancelar
+      </button>
+
+      {error && (
+        <span className="bulkbar-note err" role="alert">
+          {error}
+        </span>
+      )}
     </div>
   );
 }

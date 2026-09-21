@@ -3,17 +3,35 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { Icon } from "@/components/Icon";
+import { BarList, type BarDatum } from "@/components/BarList";
 import { useSession } from "@/lib/auth/AuthProvider";
 import { ApiError } from "@/lib/api/client";
-import { crmApi, formatMoney, type DashboardSummary } from "@/lib/api/crm";
-import { PIPELINE_STAGE_LABEL } from "@/lib/domain/enums";
+import {
+  crmApi,
+  formatMoney,
+  type ChannelsReport,
+  type DashboardSummary,
+  type FunnelReport,
+  type SaleSummary,
+  type UtilityReport,
+} from "@/lib/api/crm";
+import { CHANNEL_LABEL, PIPELINE_STAGE_LABEL, type Channel } from "@/lib/domain/enums";
+
+const CHANNEL_CLASS: Record<string, string> = {
+  whatsapp: "wa",
+  messenger: "ms",
+  instagram: "ig",
+  other: "",
+};
 
 /**
- * Dashboard base · HU-DAS-01, HU-DAS-02 y HU-DAS-07.
+ * Dashboard · HU-DAS-01 a HU-DAS-07.
  *
  * Todos los números vienen calculados del backend. La pantalla no deriva
- * ninguno: los mismos indicadores tienen que reproducirse igual en Reportes
- * (Sprint 8), y dos cálculos del mismo KPI terminan siempre discrepando.
+ * ninguno: los mismos indicadores se reproducen igual en Reportes, porque
+ * salen de los mismos endpoints. Dos cálculos del mismo KPI terminan siempre
+ * discrepando, y que el tablero y el reporte no coincidan por el mismo período
+ * es peor que no tener el tablero.
  */
 export function DashboardView() {
   const { user } = useSession();
@@ -256,6 +274,18 @@ export function DashboardView() {
           )}
         </div>
       </div>
+
+      {/*
+        HU-DAS-03 a HU-DAS-06 · lo que el Sprint 8 agrega al tablero.
+
+        Sale de los MISMOS endpoints que Reportes, no de un cálculo propio: que
+        el tablero y el reporte discrepen por el mismo período es peor que no
+        tener el tablero. Acá va el resumen; el corte por fecha y la exportación
+        viven en Reportes, que es adonde lleva el enlace.
+      */}
+      <AlertasDeViaje />
+
+      <AnalisisDelPeriodo advisorId={advisorId} />
     </>
   );
 }
@@ -319,3 +349,218 @@ function formatPeriod(period: { from: string; to: string }): string {
 }
 
 const subtleStyle = { fontSize: 11, color: "var(--text-mute)", marginTop: 6 } as const;
+
+/* ──────────────────── HU-DAS-03 a HU-DAS-06 · análisis ───────────────────── */
+
+/**
+ * Utilidad, embudo y canales del período.
+ *
+ * Se piden por separado del resumen principal y de forma tolerante: si una de
+ * las tres falla, el tablero sigue mostrando lo demás. Son datos de análisis, no
+ * la operación del día: perderlos un rato no impide trabajar.
+ */
+function AnalisisDelPeriodo({ advisorId }: { advisorId?: string }) {
+  const [utility, setUtility] = useState<UtilityReport | null>(null);
+  const [funnel, setFunnel] = useState<FunnelReport | null>(null);
+  const [channels, setChannels] = useState<ChannelsReport | null>(null);
+
+  useEffect(() => {
+    const filters = advisorId ? { advisorId } : {};
+    crmApi.utilityReport(filters).then(setUtility).catch(() => setUtility(null));
+    crmApi.funnelReport(filters).then(setFunnel).catch(() => setFunnel(null));
+    crmApi.channelsReport(filters).then(setChannels).catch(() => setChannels(null));
+  }, [advisorId]);
+
+  const funnelBars: BarDatum[] =
+    funnel?.stages.map((stage, index) => {
+      const previous = index > 0 ? funnel.stages[index - 1].count : null;
+      const rate = previous && previous > 0 ? Math.round((stage.count / previous) * 100) : null;
+      return {
+        key: stage.code,
+        label: stage.name,
+        value: stage.count,
+        display: String(stage.count),
+        note: rate === null ? undefined : `${rate} % de la etapa anterior`,
+      };
+    }) ?? [];
+
+  const salesBars: BarDatum[] =
+    channels?.sales.map((row) => ({
+      key: row.channel,
+      label: (
+        <span className={`chip ${CHANNEL_CLASS[row.channel] ?? ""}`}>
+          {CHANNEL_LABEL[row.channel as Channel] ?? "Otro"}
+        </span>
+      ),
+      value: Number(row.revenue),
+      display: `${formatMoney(row.revenue)} USD`,
+      note: `${row.count} venta${row.count === 1 ? "" : "s"}`,
+    })) ?? [];
+
+  const conversationBars: BarDatum[] =
+    channels?.conversations.map((row) => ({
+      key: row.channel,
+      label: (
+        <span className={`chip ${CHANNEL_CLASS[row.channel] ?? ""}`}>
+          {CHANNEL_LABEL[row.channel] ?? row.channel}
+        </span>
+      ),
+      value: row.conversations,
+      display: String(row.conversations),
+      note: `${row.messages} mensaje${row.messages === 1 ? "" : "s"}`,
+    })) ?? [];
+
+  return (
+    <>
+      {/* HU-DAS-03 · lo que dejó el período. Tres cifras, no un gráfico: son
+          magnitudes distintas y lo que se lee es el número. */}
+      {utility && (
+        <div className="card" style={{ marginTop: 14 }}>
+          <div className="card-h">
+            <span className="ttl">Utilidad del período</span>
+            <Link href="/reportes" className="btn ghost tiny">
+              Ver reportes
+            </Link>
+          </div>
+          <div className="dash-money">
+            <div>
+              <span className="k">Comisión de gestión</span>
+              <span className="v">{formatMoney(utility.totals.managementCommission)}</span>
+            </div>
+            <div>
+              <span className="k">Comisión de agencia</span>
+              <span className="v">{formatMoney(utility.totals.agencyCommission)}</span>
+            </div>
+            <div>
+              <span className="k">Utilidad total</span>
+              <span className="v">{formatMoney(utility.totals.utility)}</span>
+            </div>
+            <div>
+              <span className="k">Margen</span>
+              <span className="v">
+                {utility.totals.marginPercent === null
+                  ? "—"
+                  : `${utility.totals.marginPercent.toFixed(2).replace(/\.00$/, "")} %`}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="report-grid" style={{ marginTop: 14 }}>
+        {/* HU-DAS-04 · el embudo de verdad: cuántos LLEGARON a cada etapa. */}
+        {funnel && (
+          <div className="card">
+            <div className="card-h">
+              <span className="ttl">Cuántos llegaron a cada etapa</span>
+            </div>
+            <BarList data={funnelBars} emptyText="No entró ningún expediente este mes." />
+          </div>
+        )}
+
+        {/* HU-DAS-05 y HU-DAS-06 · de dónde vienen los que compran y por dónde
+            se habla. Dos listas y no un gráfico apilado: son dos preguntas. */}
+        {channels && (
+          <div className="card">
+            <div className="card-h">
+              <span className="ttl">Por canal</span>
+            </div>
+            <div className="dash-channels">
+              <div>
+                <p className="card-hint">Ventas por canal de origen</p>
+                <BarList data={salesBars} emptyText="Sin ventas este mes." />
+              </div>
+              <div>
+                <p className="card-hint">Conversaciones por canal</p>
+                <BarList data={conversationBars} emptyText="Sin conversaciones este mes." />
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+/* ──────────────── Alertas de viaje · acabado de Ventas ───────────────────── */
+
+/**
+ * Las dos llamadas que hay que hacer hoy.
+ *
+ * - **Sale pronto con saldo**: el viaje arranca dentro de siete días y el
+ *   cliente todavía debe. Después de la salida cobrar es mucho más difícil, así
+ *   que esta es la lista que hace ganar plata.
+ * - **Terminó y sigue en curso**: el regreso ya pasó y la venta no se cerró. No
+ *   es una deuda: es una venta que nadie terminó, y mientras siga abierta
+ *   ensucia todos los indicadores del período.
+ *
+ * Si no hay nada que avisar, la tarjeta no aparece. Un tablero con una sección
+ * que dice "todo bien" todos los días deja de mirarse.
+ */
+function AlertasDeViaje() {
+  const [alerts, setAlerts] = useState<{
+    departingWithBalance: SaleSummary[];
+    endedInProgress: SaleSummary[];
+  } | null>(null);
+
+  useEffect(() => {
+    crmApi.travelAlerts().then(setAlerts).catch(() => setAlerts(null));
+  }, []);
+
+  if (!alerts) return null;
+  const total = alerts.departingWithBalance.length + alerts.endedInProgress.length;
+  if (total === 0) return null;
+
+  return (
+    <div className="card" style={{ marginTop: 14 }}>
+      <div className="card-h">
+        <span className="ttl">Alertas de viaje</span>
+        <Link href="/ventas?vista=agenda" className="btn ghost tiny">
+          Agenda de cobro
+        </Link>
+      </div>
+
+      <div className="report-grid">
+        <div>
+          <p className="card-hint">
+            <b>Sale dentro de 7 días y todavía debe.</b> Después de la salida cobrar es
+            mucho más difícil.
+          </p>
+          {alerts.departingWithBalance.length === 0 ? (
+            <p className="barlist-empty">Ninguno.</p>
+          ) : (
+            <ul className="alert-list">
+              {alerts.departingWithBalance.map((sale) => (
+                <li key={sale.id}>
+                  <Link href={`/ventas/${sale.id}`}>{sale.code}</Link>
+                  <span>{sale.client?.name ?? "—"}</span>
+                  <b>{formatMoney(sale.balanceAmount)} USD</b>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div>
+          <p className="card-hint">
+            <b>El viaje terminó y la venta sigue en curso.</b> Nadie la cerró, y así
+            ensucia los indicadores del período.
+          </p>
+          {alerts.endedInProgress.length === 0 ? (
+            <p className="barlist-empty">Ninguna.</p>
+          ) : (
+            <ul className="alert-list">
+              {alerts.endedInProgress.map((sale) => (
+                <li key={sale.id}>
+                  <Link href={`/ventas/${sale.id}`}>{sale.code}</Link>
+                  <span>{sale.client?.name ?? "—"}</span>
+                  <b>{sale.destination}</b>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
