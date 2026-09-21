@@ -8,6 +8,7 @@ import type {
   CommissionMode,
   ConversationStatus,
   DeliveryStatus,
+  HsmCategory,
   MessageDirection,
   MessageType,
   FileType,
@@ -728,6 +729,23 @@ export type InboxMessage = {
   occurredAt: string;
 };
 
+/**
+ * Plantilla aprobada que se puede enviar por un hilo · HU-HSM-03.
+ *
+ * Es lo único que el CRM ofrece con la ventana de 24 h cerrada. Las administra
+ * el backoffice; acá solo se eligen y se completan.
+ */
+export type SendableTemplate = {
+  id: string;
+  name: string;
+  language: string;
+  category: HsmCategory;
+  /** Texto con las variables como `{{1}}`, `{{2}}`, … */
+  body: string;
+  /** Qué significa cada variable, en orden: `variables[0]` describe `{{1}}`. */
+  variables: string[];
+};
+
 export type ConversationView = "unassigned" | "mine" | "all";
 
 export type ConversationFilters = {
@@ -1170,6 +1188,23 @@ export const crmApi = {
     authed<InboxMessage>(`/conversations/${id}/messages`, {
       method: "POST",
       body: { text },
+    }),
+
+  /** Aprobadas en la cuenta de este hilo · HU-HSM-03. Vacío fuera de WhatsApp. */
+  conversationTemplates: (id: string) =>
+    authed<{ items: SendableTemplate[] }>(`/conversations/${id}/plantillas`),
+
+  /**
+   * Enviar una plantilla aprobada · HU-HSM-04.
+   *
+   * Los valores van por POSICIÓN, en el orden de las variables de la plantilla.
+   * Igual que la respuesta libre, puede volver con `failed` y su motivo: un
+   * rechazo de Meta es parte del historial, no un error de la petición.
+   */
+  sendConversationTemplate: (id: string, templateId: string, values: string[]) =>
+    authed<InboxMessage>(`/conversations/${id}/plantilla`, {
+      method: "POST",
+      body: { templateId, values },
     }),
 };
 

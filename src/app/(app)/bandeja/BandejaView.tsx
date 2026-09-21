@@ -17,6 +17,7 @@ import {
   type ConversationView,
   type InboxMessage,
   type MessagingConnection,
+  type SendableTemplate,
   type TeamMember,
 } from "@/lib/api/crm";
 import { BACKOFFICE_URL } from "@/lib/session";
@@ -890,8 +891,16 @@ function Composer({
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [usingTemplate, setUsingTemplate] = useState(false);
 
   const canSend = replyWindow.open && text.trim().length > 0 && !sending;
+
+  /*
+   * Con la ventana cerrada, WhatsApp solo acepta una plantilla aprobada. Es el
+   * único camino que queda, así que el cuadro se convierte en el selector en vez
+   * de dejar un campo deshabilitado que no explica qué hacer.
+   */
+  const windowClosed = conversation.channel === "whatsapp" && !replyWindow.open;
 
   async function send() {
     if (!canSend) return;
@@ -930,7 +939,7 @@ function Composer({
             <>
               <span className="closed">● Ventana de {WHATSAPP_WINDOW_HOURS} h cerrada</span>
               <span style={{ color: "var(--text-mute)", fontWeight: 500 }}>
-                Para escribirle hará falta una plantilla HSM aprobada
+                Solo se puede escribir con una plantilla aprobada
               </span>
             </>
           )
@@ -948,38 +957,257 @@ function Composer({
         </div>
       )}
 
-      <div className="row">
-        <input
-          value={text}
-          onChange={(event) => setText(event.target.value)}
-          onKeyDown={(event) => {
-            // Enter manda; Shift+Enter se reserva para cuando el campo crezca.
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              void send();
+      {windowClosed && usingTemplate ? (
+        <TemplatePicker
+          conversationId={conversation.id}
+          onCancel={() => setUsingTemplate(false)}
+          onSent={(message) => {
+            setUsingTemplate(false);
+            onSent(message);
+            if (message.deliveryStatus === "failed") {
+              setError(message.failureReason ?? "Meta rechazó el envío.");
             }
           }}
-          disabled={!replyWindow.open || sending}
-          maxLength={4096}
-          placeholder={
-            replyWindow.open
-              ? "Escribí tu respuesta…"
-              : "Ventana cerrada · hace falta una plantilla aprobada"
-          }
-          aria-label="Mensaje"
         />
+      ) : windowClosed ? (
         <button
           type="button"
-          className={sending ? "send is-sending" : "send"}
-          aria-label={sending ? "Enviando" : "Enviar"}
-          onClick={() => void send()}
-          disabled={!canSend}
+          className="composer-template-cta"
+          onClick={() => {
+            setError(null);
+            setUsingTemplate(true);
+          }}
         >
-          <Icon name="arrow-right" />
+          <Icon name="doc" width={14} height={14} />
+          Escribir con una plantilla aprobada
+        </button>
+      ) : (
+        <div className="row">
+          <input
+            value={text}
+            onChange={(event) => setText(event.target.value)}
+            onKeyDown={(event) => {
+              // Enter manda; Shift+Enter se reserva para cuando el campo crezca.
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                void send();
+              }
+            }}
+            disabled={!replyWindow.open || sending}
+            maxLength={4096}
+            placeholder="Escribí tu respuesta…"
+            aria-label="Mensaje"
+          />
+          <button
+            type="button"
+            className={sending ? "send is-sending" : "send"}
+            aria-label={sending ? "Enviando" : "Enviar"}
+            onClick={() => void send()}
+            disabled={!canSend}
+          >
+            <Icon name="arrow-right" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─────────────────────── Plantilla con la ventana cerrada ─────────────────── */
+
+/**
+ * Selector de plantilla HSM · HU-HSM-04.
+ *
+ * Solo aparece con la ventana de 24 h cerrada, porque es el único momento en que
+ * hace falta: dentro de la ventana el texto libre es más rápido y no consume una
+ * plantilla.
+ *
+ * La vista previa se arma con los valores que se van escribiendo. Un mensaje
+ * fuera de ventana reabre una conversación fría y cuesta dinero; que el asesor
+ * lea exactamente lo que va a salir antes de pulsar enviar evita el mensaje con
+ * el nombre de otro cliente.
+ */
+function TemplatePicker({
+  conversationId,
+  onCancel,
+  onSent,
+}: {
+  conversationId: string;
+  onCancel: () => void;
+  onSent: (message: InboxMessage) => void;
+}) {
+  const [templates, setTemplates] = useState<SendableTemplate[] | null>(null);
+  const [selectedId, setSelectedId] = useState("");
+  const [values, setValues] = useState<string[]>([]);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    crmApi
+      .conversationTemplates(conversationId)
+      .then((response) => {
+        if (!alive) return;
+        setTemplates(response.items);
+        const first = response.items[0];
+        if (first) {
+          setSelectedId(first.id);
+          setValues(first.variables.map(() => ""));
+        }
+      })
+      .catch((caught: unknown) => {
+        if (!alive) return;
+        setTemplates([]);
+        setError(
+          caught instanceof ApiError
+            ? caught.message
+            : "No se pudieron cargar las plantillas.",
+        );
+      });
+    return () => {
+      alive = false;
+    };
+  }, [conversationId]);
+
+  const selected = templates?.find((template) => template.id === selectedId) ?? null;
+  const complete = Boolean(selected) && values.every((value) => value.trim().length > 0);
+
+  async function send() {
+    if (!selected || !complete || sending) return;
+    setSending(true);
+    setError(null);
+    try {
+      onSent(
+        await crmApi.sendConversationTemplate(
+          conversationId,
+          selected.id,
+          values.map((value) => value.trim()),
+        ),
+      );
+    } catch (caught) {
+      setError(
+        caught instanceof ApiError
+          ? caught.message
+          : "No se pudo enviar. Revisá la conexión y probá de nuevo.",
+      );
+      setSending(false);
+    }
+  }
+
+  if (templates === null) {
+    return <div className="composer-template">Buscando plantillas aprobadas…</div>;
+  }
+
+  if (templates.length === 0) {
+    return (
+      <div className="composer-template">
+        <p>
+          <b>No hay ninguna plantilla aprobada</b> para esta cuenta de WhatsApp, así que
+          esta conversación no se puede reabrir desde el CRM. Un Gerente o Administrador
+          las redacta en <b>Backoffice → Plantillas HSM</b>; la aprobación de Meta tarda.
+        </p>
+        {error && <div className="composer-error" role="alert">{error}</div>}
+        <button type="button" className="btn ghost tiny" onClick={onCancel}>
+          Volver
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="composer-template">
+      {error && (
+        <div className="composer-error" role="alert">
+          <Icon name="target" width={12} height={12} />
+          <span>{error}</span>
+        </div>
+      )}
+
+      <label className="composer-template-label" htmlFor="template-choice">
+        Plantilla
+      </label>
+      <select
+        id="template-choice"
+        value={selectedId}
+        onChange={(event) => {
+          const next = templates.find((template) => template.id === event.target.value);
+          setSelectedId(event.target.value);
+          setValues(next ? next.variables.map(() => "") : []);
+          setError(null);
+        }}
+        disabled={sending}
+      >
+        {templates.map((template) => (
+          <option key={template.id} value={template.id}>
+            {template.name} · {template.language}
+          </option>
+        ))}
+      </select>
+
+      {selected && selected.variables.length > 0 && (
+        <div className="composer-template-vars">
+          {selected.variables.map((variable, index) => (
+            <div key={`${selected.id}-${index}`}>
+              <label
+                className="composer-template-label"
+                htmlFor={`template-value-${index}`}
+              >
+                {variable}
+              </label>
+              <input
+                id={`template-value-${index}`}
+                value={values[index] ?? ""}
+                onChange={(event) =>
+                  setValues((prev) =>
+                    prev.map((item, position) =>
+                      position === index ? event.target.value : item,
+                    ),
+                  )
+                }
+                maxLength={400}
+                disabled={sending}
+                autoComplete="off"
+              />
+            </div>
+          ))}
+        </div>
+      )}
+
+      {selected && (
+        <div className="composer-template-preview">
+          <span>Se enviará</span>
+          <p>{fillTemplate(selected.body, values)}</p>
+        </div>
+      )}
+
+      <div className="composer-template-actions">
+        <button
+          type="button"
+          className="btn primary tiny"
+          onClick={() => void send()}
+          disabled={!complete || sending}
+        >
+          {sending ? "Enviando…" : "Enviar plantilla"}
+        </button>
+        <button type="button" className="btn ghost tiny" onClick={onCancel} disabled={sending}>
+          Cancelar
         </button>
       </div>
     </div>
   );
+}
+
+/**
+ * La vista previa, con los huecos todavía sin llenar a la vista.
+ *
+ * Un valor vacío deja `{{n}}` en vez de un blanco: así se ve que falta algo,
+ * que es justamente lo que el botón deshabilitado está esperando.
+ */
+function fillTemplate(body: string, values: string[]): string {
+  return body.replace(/\{\{\s*(\d+)\s*\}\}/g, (match, index: string) => {
+    const value = values[Number(index) - 1]?.trim();
+    return value ? value : match;
+  });
 }
 
 function windowState(conversation: ConversationSummary): { open: boolean; remaining: string } {
