@@ -84,7 +84,19 @@ const TABS = [
 
 type TabId = (typeof TABS)[number]["id"];
 
-type TabCounts = { quotes: number; sales: number; conversations: number; files: number };
+type TabCounts = {
+  quotes: number;
+  sales: number;
+  conversations: number;
+  files: number;
+  economics: {
+    quotedAmount: string;
+    quotedCount: number;
+    soldAmount: string;
+    soldCount: number;
+    outstandingAmount: string;
+  };
+};
 
 /**
  * Las pestañas con lo que hay detrás de cada una · `C7`.
@@ -217,11 +229,25 @@ export function ExpedienteView({ clientId }: { clientId: string }) {
    */
   const saveSection = useCallback(
     async (patch: UpdateClientInput) => {
-      setClient(await crmApi.updateClient(clientId, patch));
+      /*
+       * La precondición de `D5`: el `updatedAt` que esta pantalla tiene cargado.
+       *
+       * Si alguien editó el expediente mientras estaba abierto, el backend
+       * responde 409 en vez de pisar su trabajo. Sin esto, guardar una nota diez
+       * minutos después devolvía al valor viejo el teléfono que otro acababa de
+       * corregir —porque el formulario manda TODOS sus campos, no solo el que se
+       * tocó— y nadie se enteraba.
+       */
+      setClient(
+        await crmApi.updateClient(clientId, {
+          ...patch,
+          ...(client ? { expectedUpdatedAt: client.updatedAt } : {}),
+        }),
+      );
       const events = await crmApi.activity(clientId).catch(() => null);
       if (events) setActivity(events);
     },
-    [clientId],
+    [clientId, client],
   );
 
   if (error) {
@@ -380,6 +406,8 @@ export function ExpedienteView({ clientId }: { clientId: string }) {
           </div>
         </div>
       )}
+
+      {counts && <ResumenEconomico economics={counts.economics} />}
 
       <Tabs
         options={TABS_WITH_COUNTS(counts)}
@@ -932,4 +960,51 @@ function DuplicadosCard({
   );
 }
 
+/**
+ * Las tres cifras que resumen la relación comercial · `F5`, HU-EXP-01.
+ *
+ * Cotizado, vendido y saldo. Hasta ahora había que entrar a dos pestañas y sumar
+ * a mano para responder "¿cuánto le hemos cotizado a esta persona y cuánto nos
+ * compró?", que es la primera pregunta antes de llamarla.
+ *
+ * **No lleva comisiones ni utilidad**: el expediente lo abre cualquiera y DM-19
+ * recorta la utilidad por rol. Lo económico interno vive en el detalle de cada
+ * venta, que sí la aplica.
+ */
+function ResumenEconomico({ economics }: { economics: TabCounts["economics"] }) {
+  const cifras = [
+    {
+      label: "Cotizado",
+      value: economics.quotedAmount,
+      note: `${economics.quotedCount} cotización${
+        economics.quotedCount === 1 ? "" : "es"
+      } enviada${economics.quotedCount === 1 ? "" : "s"}`,
+    },
+    {
+      label: "Vendido",
+      value: economics.soldAmount,
+      note: `${economics.soldCount} venta${
+        economics.soldCount === 1 ? "" : "s"
+      } sin contar canceladas`,
+    },
+    {
+      label: "Saldo pendiente",
+      value: economics.outstandingAmount,
+      note: Number(economics.outstandingAmount) > 0 ? "Hay algo por cobrar" : "Todo cobrado",
+    },
+  ];
 
+  return (
+    <div className="exp-money">
+      {cifras.map((cifra) => (
+        <div key={cifra.label}>
+          <span className="k">{cifra.label}</span>
+          <span className="v">
+            {formatMoney(cifra.value)} <span className="u">USD</span>
+          </span>
+          <span className="n">{cifra.note}</span>
+        </div>
+      ))}
+    </div>
+  );
+}

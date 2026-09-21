@@ -1695,6 +1695,42 @@ table.t .th-sort.is-active svg { opacity: 1; color: var(--orange); }
   .report-grid { grid-template-columns: 1fr; }
 }
 
+/* Las tres cifras del expediente · F5. Encima de las pestañas porque responden
+   la pregunta que se hace ANTES de elegir en qué pestaña mirar. */
+.exp-money {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px;
+  margin-top: 14px;
+}
+.exp-money > div {
+  background: var(--white); border: 1px solid var(--border); border-radius: 12px;
+  padding: 12px 16px;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.exp-money .k { font-size: 11px; font-weight: 600; color: var(--text-mute); text-transform: uppercase; letter-spacing: .05em; }
+.exp-money .v { font-size: 20px; font-weight: 800; color: var(--text); letter-spacing: -0.02em; }
+.exp-money .v .u { font-size: 12px; font-weight: 600; color: var(--text-mute); }
+.exp-money .n { font-size: 11px; color: var(--text-faint); }
+@media (max-width: 760px) {
+  .exp-money { grid-template-columns: 1fr; }
+}
+
+/* Acciones en lote · F3. Fija sobre el listado y no flotando encima: la acción
+   se decide mirando la tabla, y un panel que la tape obliga a cerrarlo para
+   comprobar qué se marcó. */
+.bulkbar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 14px; margin-bottom: 12px;
+  background: var(--navy-bg); border: 1px solid var(--navy-soft);
+  border-radius: 10px;
+  font-size: 13px; color: var(--navy);
+}
+.bulkbar .selectfilter { background: var(--white); }
+.bulkbar-note { font-size: 12px; font-weight: 600; }
+.bulkbar-note.ok { color: var(--green); }
+.bulkbar-note.err { color: var(--red); }
+/* La fila marcada, sin gritar: la barra de arriba ya dice cuántas hay. */
+.t tr.is-selected > td { background: var(--navy-bg); }
+
 /* ===== Barras de los reportes · wireframe 11 =====
  * Marcas finas, pista de fondo casi al ras de la superficie y sin rejilla: la
  * cifra va al final de cada barra, así que una rejilla solo agregaría ruido. */

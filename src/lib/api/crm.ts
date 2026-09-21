@@ -273,7 +273,14 @@ export type UpdateClientInput = {
     destinations?: string[];
     interests?: string[];
     notes?: string | null;
-  };
+    /**
+   * `updatedAt` que la pantalla leyó al empezar a editar · `D5`.
+   *
+   * Si el expediente cambió desde entonces, el backend responde 409 en vez de
+   * pisar el trabajo de la otra persona.
+   */
+  expectedUpdatedAt?: string;
+};
   internalNotes?: string | null;
   estimatedValue?: string | null;
 };
@@ -991,9 +998,20 @@ export const crmApi = {
    * en cada apertura del expediente.
    */
   clientTabCounts: (id: string) =>
-    authed<{ quotes: number; sales: number; conversations: number; files: number }>(
-      `/clients/${id}/counts`,
-    ),
+    authed<{
+      quotes: number;
+      sales: number;
+      conversations: number;
+      files: number;
+      /** Cotizado, vendido y saldo del expediente · `F5`, HU-EXP-01. */
+      economics: {
+        quotedAmount: string;
+        quotedCount: number;
+        soldAmount: string;
+        soldCount: number;
+        outstandingAmount: string;
+      };
+    }>(`/clients/${id}/counts`),
 
   /** Lo mismo para un alta que todavía no se guardó (`F2`). */
   probeDuplicates: (input: { fullName?: string; primaryPhone?: string; primaryEmail?: string }) =>
