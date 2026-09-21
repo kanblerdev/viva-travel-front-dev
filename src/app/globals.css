@@ -1666,6 +1666,17 @@ table.t .th-sort.is-active svg { opacity: 1; color: var(--orange); }
   .merge-choice { grid-template-columns: 1fr; }
 }
 
+/* Aclaración corta debajo de un campo, con su icono · D3.
+ * Estaba copiada como objeto `style` en dos archivos, que es exactamente lo que
+ * el 5C enseñó a no hacer: una maqueta en línea le gana a cualquier @media. */
+.field-hint {
+  display: flex; align-items: center; gap: 6px;
+  margin-top: 8px;
+  font-size: 12px; color: var(--text-mute);
+}
+/* La misma aclaración cuando lo que dice es un problema. */
+.field-hint.is-error { color: var(--red); }
+
 /* ===== Etiquetas en la tarjeta y en la fila · C9 =====
  * Discretas a propósito: la tarjeta se tiene que seguir leyendo de un vistazo,
  * y el nombre del cliente es lo que manda. Compiten con el destino y el monto,

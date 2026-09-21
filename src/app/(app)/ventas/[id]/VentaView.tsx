@@ -19,10 +19,11 @@ import {
   type TeamMember,
 } from "@/lib/api/crm";
 import {
-  manualSaleTransitions,
   PAYMENT_STATUS_LABEL,
   QUOTE_TYPE_LABEL,
+  SALE_STATUS_CHIP,
   SALE_STATUS_LABEL,
+  manualSaleTransitions,
   type PaymentKind,
 } from "@/lib/domain/enums";
 import {
@@ -34,7 +35,6 @@ import {
   ReasignarVentaModal,
   RegistrarPagoModal,
 } from "../modals";
-import { SALE_STATUS_CHIP } from "../VentasView";
 
 const PAYMENT_KIND_LABEL: Record<PaymentKind, string> = {
   deposit: "Anticipo",

@@ -211,6 +211,15 @@ export const SALE_STATUS_LABEL: Record<SaleStatus, string> = {
   canceled: "Cancelada",
 };
 
+/** Color del chip de cada estado de venta. Lo usan el listado y el expediente. */
+export const SALE_STATUS_CHIP: Record<SaleStatus, string> = {
+  reserved: "amber",
+  paid: "blue",
+  in_progress: "purple",
+  completed: "green",
+  canceled: "red",
+};
+
 /** Máquina de estados de venta (Levantamiento Funcional · 8.1). */
 export const SALE_TRANSITIONS: Record<SaleStatus, SaleStatus[]> = {
   reserved: ["paid", "canceled"],

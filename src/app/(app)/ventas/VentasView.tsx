@@ -19,23 +19,16 @@ import {
   type TeamMember,
 } from "@/lib/api/crm";
 import {
-  PAYMENT_STATUS_LABEL,
   PAYMENT_STATUSES,
-  SALE_STATUS_LABEL,
+  PAYMENT_STATUS_LABEL,
   SALE_STATUSES,
+  SALE_STATUS_CHIP,
+  SALE_STATUS_LABEL,
   type PaymentStatus,
   type SaleStatus,
 } from "@/lib/domain/enums";
-import { NuevaVentaModal } from "./modals";
+import { NuevaVentaModal } from "@/components/NuevaVentaModal";
 import { AgendaCobro } from "./AgendaCobro";
-
-export const SALE_STATUS_CHIP: Record<SaleStatus, string> = {
-  reserved: "amber",
-  paid: "blue",
-  in_progress: "purple",
-  completed: "green",
-  canceled: "red",
-};
 
 const PAGE_SIZE = 50;
 
