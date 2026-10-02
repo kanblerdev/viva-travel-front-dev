@@ -414,6 +414,7 @@ export const FILE_TYPES = [
   "passport",
   "payment_receipt",
   "quote_pdf",
+  "quote_annex",
   "invoice_pdf",
   "other",
 ] as const;
@@ -423,6 +424,7 @@ export const FILE_TYPE_LABEL: Record<FileType, string> = {
   passport: "Pasaporte",
   payment_receipt: "Comprobante de pago",
   quote_pdf: "PDF de cotización",
+  quote_annex: "Anexo de cotización",
   invoice_pdf: "Factura",
   other: "Otro",
 };

@@ -10,16 +10,46 @@ import { ApiError } from "@/lib/api/client";
 import {
   crmApi,
   formatMoney,
+  type BranchSalesReport,
   type ChannelsReport,
+  type ExpectedReport,
   type FunnelReport,
   type PerformanceReport,
+  type ReceivableBucket,
+  type ReceivablesReport,
   type ReportFilters,
   type TeamMember,
+  type TrendReport,
   type UtilityReport,
 } from "@/lib/api/crm";
 import { CHANNEL_LABEL, type Channel } from "@/lib/domain/enums";
 
-type ReportKind = "utilidad" | "desempeno" | "embudo" | "canales";
+type ReportKind =
+  | "utilidad"
+  | "desempeno"
+  | "embudo"
+  | "canales"
+  | "esperado"
+  | "cobranza"
+  | "sucursales"
+  | "tendencia";
+
+/** Etiquetas de los tramos de cobranza · DV-13. */
+const BUCKET_LABEL: Record<ReceivableBucket, string> = {
+  current: "Por vencer",
+  due_1_30: "Vencido 1–30 días",
+  due_31_60: "Vencido 31–60 días",
+  due_61_plus: "Vencido +60 días",
+  no_due_date: "Sin fecha límite",
+};
+
+const BUCKET_TONE: Record<ReceivableBucket, string> = {
+  current: "var(--green)",
+  due_1_30: "var(--amber)",
+  due_31_60: "var(--orange-deep)",
+  due_61_plus: "var(--red)",
+  no_due_date: "var(--text-mute)",
+};
 
 const GROUP_LABEL: Record<NonNullable<ReportFilters["groupBy"]>, string> = {
   destination: "Destino",
@@ -77,24 +107,31 @@ export function ReportesView() {
    * render leía el de utilidad con la forma del de canales y reventaba en
    * `sales.map`. Emparejarlos hace imposible dibujar uno con la forma de otro.
    */
+  const [branches, setBranches] = useState<{ id: string; name: string }[]>([]);
+  const [branchId, setBranchId] = useState("");
   const [loaded, setLoaded] = useState<
     | { kind: "utilidad"; report: UtilityReport }
     | { kind: "desempeno"; report: PerformanceReport }
     | { kind: "embudo"; report: FunnelReport }
     | { kind: "canales"; report: ChannelsReport }
+    | { kind: "esperado"; report: ExpectedReport }
+    | { kind: "cobranza"; report: ReceivablesReport }
+    | { kind: "sucursales"; report: BranchSalesReport }
+    | { kind: "tendencia"; report: TrendReport }
     | null
   >(null);
   const [error, setError] = useState<string | null>(null);
-  const [downloading, setDownloading] = useState(false);
+  const [downloading, setDownloading] = useState<string | null>(null);
 
   const filters = useMemo<ReportFilters>(
     () => ({
       from: range.from,
       to: range.to,
       ...(advisorId ? { advisorId } : {}),
+      ...(branchId ? { branchId } : {}),
       ...(kind === "utilidad" ? { groupBy } : {}),
     }),
-    [range, advisorId, kind, groupBy],
+    [range, advisorId, branchId, kind, groupBy],
   );
 
   useEffect(() => {
@@ -107,6 +144,7 @@ export function ReportesView() {
       )
       .catch(() => setAvailable([{ id: "utilidad", label: "Utilidad por comisiones" }]));
     crmApi.team().then(setTeam).catch(() => undefined);
+    crmApi.branches().then(setBranches).catch(() => undefined);
   }, []);
 
   const load = useCallback(async () => {
@@ -118,7 +156,15 @@ export function ReportesView() {
         setLoaded({ kind, report: await crmApi.performanceReport(filters) });
       else if (kind === "embudo")
         setLoaded({ kind, report: await crmApi.funnelReport(filters) });
-      else setLoaded({ kind, report: await crmApi.channelsReport(filters) });
+      else if (kind === "canales")
+        setLoaded({ kind, report: await crmApi.channelsReport(filters) });
+      else if (kind === "esperado")
+        setLoaded({ kind, report: await crmApi.expectedReport(filters) });
+      else if (kind === "cobranza")
+        setLoaded({ kind, report: await crmApi.receivablesReport(filters) });
+      else if (kind === "sucursales")
+        setLoaded({ kind, report: await crmApi.branchSalesReport(filters) });
+      else setLoaded({ kind, report: await crmApi.trendReport(filters) });
     } catch (caught) {
       setError(
         caught instanceof ApiError ? caught.message : "No se pudo cargar el reporte.",
@@ -130,15 +176,19 @@ export function ReportesView() {
     void load();
   }, [load]);
 
-  async function download() {
-    setDownloading(true);
+  /** Descarga el reporte actual o el libro completo, en Excel o PDF (DV-14). */
+  async function download(format: "xlsx" | "pdf", book = false) {
+    const job = `${book ? "libro" : kind}-${format}`;
+    setDownloading(job);
     setError(null);
     try {
-      const blob = await crmApi.downloadReport(kind, filters);
+      const blob = book
+        ? await crmApi.downloadReportBook(filters, format)
+        : await crmApi.downloadReport(kind, filters, format);
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `${kind}-${range.from}-a-${range.to}.xlsx`;
+      link.download = `${book ? "reportes" : kind}-${range.from}-a-${range.to}.${format}`;
       link.click();
       URL.revokeObjectURL(url);
     } catch (caught) {
@@ -146,7 +196,7 @@ export function ReportesView() {
         caught instanceof ApiError ? caught.message : "No se pudo generar el archivo.",
       );
     } finally {
-      setDownloading(false);
+      setDownloading(null);
     }
   }
 
@@ -160,15 +210,45 @@ export function ReportesView() {
             dashboard: salen del mismo cálculo.
           </div>
         </div>
-        <div className="actions">
+        <div className="actions" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button
             type="button"
             className="btn primary"
-            onClick={() => void download()}
-            disabled={downloading || loaded === null}
+            onClick={() => void download("xlsx")}
+            disabled={downloading !== null || loaded === null}
           >
             <Icon name="download" />
-            {downloading ? "Generando…" : "Exportar a Excel"}
+            {downloading === `${kind}-xlsx` ? "Generando…" : "Excel"}
+          </button>
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={() => void download("pdf")}
+            disabled={downloading !== null || loaded === null}
+            title="El mismo reporte, en PDF para compartir (DV-14)"
+          >
+            <Icon name="doc" />
+            {downloading === `${kind}-pdf` ? "Generando…" : "PDF"}
+          </button>
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={() => void download("xlsx", true)}
+            disabled={downloading !== null}
+            title="Todos los reportes del período en un solo libro, una hoja por reporte"
+          >
+            <Icon name="folder" />
+            {downloading === "libro-xlsx" ? "Generando…" : "Libro Excel"}
+          </button>
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={() => void download("pdf", true)}
+            disabled={downloading !== null}
+            title="El resumen ejecutivo completo, en PDF"
+          >
+            <Icon name="folder" />
+            {downloading === "libro-pdf" ? "Generando…" : "Libro PDF"}
           </button>
         </div>
       </div>
@@ -227,6 +307,25 @@ export function ReportesView() {
           </select>
         )}
 
+        {/* HU-REP-09: la sucursal de ORIGEN del cliente, en toda la reportería.
+            Las conversaciones del reporte de canales no se filtran: un hilo no
+            tiene sucursal. */}
+        {branches.length > 0 && (
+          <select
+            className="selectfilter"
+            value={branchId}
+            onChange={(event) => setBranchId(event.target.value)}
+            aria-label="Filtrar por sucursal"
+          >
+            <option value="">Todas las sucursales</option>
+            {branches.map((branch) => (
+              <option key={branch.id} value={branch.id}>
+                {branch.name}
+              </option>
+            ))}
+          </select>
+        )}
+
         {kind === "utilidad" && (
           <select
             className="selectfilter"
@@ -255,6 +354,10 @@ export function ReportesView() {
           {loaded.kind === "desempeno" && <Desempeno report={loaded.report} />}
           {loaded.kind === "embudo" && <Embudo report={loaded.report} />}
           {loaded.kind === "canales" && <Canales report={loaded.report} />}
+          {loaded.kind === "esperado" && <Esperado report={loaded.report} />}
+          {loaded.kind === "cobranza" && <Cobranza report={loaded.report} />}
+          {loaded.kind === "sucursales" && <Sucursales report={loaded.report} />}
+          {loaded.kind === "tendencia" && <Tendencia report={loaded.report} />}
         </TabPanel>
       )}
     </>
@@ -348,9 +451,12 @@ function Desempeno({ report }: { report: PerformanceReport }) {
               <th>Cotizaciones</th>
               <th>Ventas</th>
               <th>Vendido</th>
+              <th>Variación</th>
               <th>Utilidad</th>
               <th>Margen</th>
               <th>Tasa de cierre</th>
+              <th>Esperado</th>
+              <th>Por cobrar</th>
             </tr>
           </thead>
           <tbody>
@@ -367,10 +473,48 @@ function Desempeno({ report }: { report: PerformanceReport }) {
                 <td className="num">{row.quotesSent}</td>
                 <td className="num">{row.salesCount}</td>
                 <td className="num">{formatMoney(row.revenue)}</td>
+                {/* HU-DAS-08: contra el período equivalente anterior. */}
+                <td
+                  className="num"
+                  style={{
+                    color:
+                      row.revenueDeltaPercent === null
+                        ? "var(--text-mute)"
+                        : row.revenueDeltaPercent >= 0
+                          ? "var(--green)"
+                          : "var(--red)",
+                    fontWeight: 600,
+                  }}
+                  title={`Período anterior: ${formatMoney(row.previousRevenue)}`}
+                >
+                  {row.revenueDeltaPercent === null
+                    ? "—"
+                    : `${row.revenueDeltaPercent > 0 ? "+" : ""}${row.revenueDeltaPercent} %`}
+                </td>
                 <td className="num">{formatMoney(row.utility)}</td>
                 <td className="num">{percent(row.marginPercent)}</td>
                 <td className="num">
                   {row.closeRate === null ? "—" : `${Math.round(row.closeRate * 100)} %`}
+                </td>
+                {/* HU-REP-10: lo que tiene en juego y en la calle, a hoy. */}
+                <td className="num" title={`${row.expectedCount} cotizaciones vigentes`}>
+                  {formatMoney(row.expectedAmount)}
+                </td>
+                <td
+                  className="num"
+                  style={
+                    row.receivableOldestBucket &&
+                    row.receivableOldestBucket !== "current"
+                      ? { color: BUCKET_TONE[row.receivableOldestBucket], fontWeight: 600 }
+                      : undefined
+                  }
+                  title={
+                    row.receivableOldestBucket
+                      ? `Mora más vieja: ${BUCKET_LABEL[row.receivableOldestBucket]}`
+                      : undefined
+                  }
+                >
+                  {formatMoney(row.receivableBalance)}
                 </td>
               </tr>
             ))}
@@ -379,11 +523,275 @@ function Desempeno({ report }: { report: PerformanceReport }) {
       </div>
       <p className="card-hint" style={{ padding: "0 16px 14px" }}>
         La tasa de cierre es ventas creadas ÷ cotizaciones enviadas en el período
-        (<b>DM-03</b>). Una venta puede nacer de una cotización enviada antes, así que un
-        mes aislado puede pasar del 100 %.
+        (<b>DM-03</b>); un mes aislado puede pasar del 100 %. La variación compara
+        lo vendido contra el período equivalente anterior. Esperado y por cobrar son a
+        hoy, no del período; el color del saldo marca su mora más vieja.
       </p>
     </div>
   );
+}
+
+/* ─────────────── HU-REP-07 · dinero esperado por cotizaciones ─────────────── */
+
+function Esperado({ report }: { report: ExpectedReport }) {
+  const advisorBars: BarDatum[] = report.byAdvisor.map((row) => ({
+    key: row.id,
+    label: row.name,
+    value: Number(row.amount),
+    display: `${formatMoney(row.amount)} USD`,
+    note: `${row.count} cotización${row.count === 1 ? "" : "es"} vigente${row.count === 1 ? "" : "s"}`,
+  }));
+
+  const branchBars: BarDatum[] = report.byBranch.map((row) => ({
+    key: row.branchId ?? "sin-sucursal",
+    label: row.name ?? "Sin sucursal",
+    value: Number(row.amount),
+    display: `${formatMoney(row.amount)} USD`,
+    note: `${row.count} cotización${row.count === 1 ? "" : "es"}`,
+  }));
+
+  return (
+    <>
+      <div className="stats">
+        <Stat
+          label="Esperado"
+          value={`$${formatMoney(report.totals.amount)}`}
+          unit="USD a hoy"
+        />
+        <Stat
+          label="Cotizaciones vigentes"
+          value={String(report.totals.count)}
+          unit="una por expediente (DV-12)"
+        />
+        <Stat
+          label={`Vencen en ${report.expiringSoon.days} días`}
+          value={`$${formatMoney(report.expiringSoon.amount)}`}
+          unit={`${report.expiringSoon.count} cotizaciones`}
+        />
+      </div>
+
+      <div className="report-grid" style={{ marginTop: 14 }}>
+        <div className="card">
+          <h2 className="card-title">Esperado por asesor</h2>
+          <p className="card-hint">
+            Cotizaciones <b>enviadas y vigentes</b>, a hoy; por expediente cuenta solo la
+            más reciente (<b>DV-12</b>). Sin ponderar por tasa de cierre: un número
+            auditable vale más que uno estimado.
+          </p>
+          <BarList data={advisorBars} emptyText="No hay cotizaciones vigentes." />
+        </div>
+
+        <div className="card">
+          <h2 className="card-title">Esperado por sucursal</h2>
+          <p className="card-hint">Según la sucursal de origen del expediente.</p>
+          <BarList data={branchBars} emptyText="No hay cotizaciones vigentes." />
+        </div>
+      </div>
+    </>
+  );
+}
+
+/* ─────────────── HU-REP-08 · cuentas por cobrar con antigüedad ────────────── */
+
+function Cobranza({ report }: { report: ReceivablesReport }) {
+  return (
+    <>
+      <div className="stats">
+        {report.buckets.map((bucket) => (
+          <div className="stat" key={bucket.bucket}>
+            <div className="label">{BUCKET_LABEL[bucket.bucket]}</div>
+            <div className="val" style={{ color: BUCKET_TONE[bucket.bucket] }}>
+              {formatMoney(bucket.balance)}
+              <span className="u">USD</span>
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text-mute)" }}>
+              {bucket.count} venta{bucket.count === 1 ? "" : "s"}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="report-grid" style={{ marginTop: 14 }}>
+        <div className="card">
+          <h2 className="card-title">Por asesor</h2>
+          <p className="card-hint">
+            El saldo de su cartera, a hoy. El color marca su mora más vieja.
+          </p>
+          <BarList
+            data={report.byAdvisor.map((row) => ({
+              key: row.id,
+              label: row.name,
+              value: Number(row.balance),
+              display: `${formatMoney(row.balance)} USD`,
+              note: row.oldestBucket ? BUCKET_LABEL[row.oldestBucket] : undefined,
+            }))}
+            emptyText="No hay saldos pendientes."
+          />
+        </div>
+        <div className="card">
+          <h2 className="card-title">Por sucursal</h2>
+          <p className="card-hint">Según el origen del cliente.</p>
+          <BarList
+            data={report.byBranch.map((row) => ({
+              key: row.branchId ?? "sin-sucursal",
+              label: row.name ?? "Sin sucursal",
+              value: Number(row.balance),
+              display: `${formatMoney(row.balance)} USD`,
+              note: `${row.count} venta${row.count === 1 ? "" : "s"}`,
+            }))}
+            emptyText="No hay saldos pendientes."
+          />
+        </div>
+      </div>
+
+      <div className="card" style={{ marginTop: 14, padding: 0, overflow: "hidden" }}>
+        <div style={{ overflowX: "auto" }}>
+          <table className="t">
+            <thead>
+              <tr>
+                <th>Venta</th>
+                <th>Cliente</th>
+                <th>Fecha límite</th>
+                <th>Tramo</th>
+                <th>Saldo</th>
+              </tr>
+            </thead>
+            <tbody>
+              {report.rows.map((row) => (
+                <tr key={row.saleId}>
+                  <td className="mono" style={{ fontSize: 12 }}>
+                    {row.code}
+                  </td>
+                  <td>{row.clientName ?? "—"}</td>
+                  <td>{row.dueDate ? previewDate(row.dueDate) : "Sin fecha"}</td>
+                  <td>
+                    <span style={{ color: BUCKET_TONE[row.bucket], fontWeight: 600, fontSize: 12 }}>
+                      {BUCKET_LABEL[row.bucket]}
+                    </span>
+                  </td>
+                  <td className="num">{formatMoney(row.balance)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="card-hint" style={{ padding: "0 16px 14px" }}>
+          De la más vencida a la más nueva, hasta 200. La antigüedad se cuenta desde la
+          <b> fecha límite de pago</b> (<b>DV-13</b>): contarla desde la venta castigaría
+          planes de cuotas pactados largos.
+        </p>
+      </div>
+    </>
+  );
+}
+
+/* ─────────────────── HU-REP-09 · ventas por sucursal ──────────────────────── */
+
+function Sucursales({ report }: { report: BranchSalesReport }) {
+  const bars: BarDatum[] = report.rows.map((row) => ({
+    key: row.branchId ?? "sin-sucursal",
+    label: row.branchName ?? "Sin sucursal",
+    value: Number(row.totalAmount),
+    display: `${formatMoney(row.totalAmount)} USD`,
+    note: `${row.count} venta${row.count === 1 ? "" : "s"} · cobrado ${formatMoney(
+      row.collectedAmount,
+    )} · utilidad ${formatMoney(row.utility)}`,
+  }));
+
+  return (
+    <>
+      <div className="card">
+        <h2 className="card-title">Ventas por sucursal</h2>
+        <p className="card-hint">
+          Según la sucursal de <b>origen</b> del cliente, la misma que exige el alta de
+          prospecto. &ldquo;Sin sucursal&rdquo; son expedientes anteriores al campo: se
+          muestran para que la tabla cuadre con el total del período.
+        </p>
+        <BarList data={bars} emptyText="No hubo ventas en el período." />
+      </div>
+
+      <div className="card" style={{ marginTop: 14, padding: 0, overflow: "hidden" }}>
+        <div style={{ overflowX: "auto" }}>
+          <table className="t">
+            <thead>
+              <tr>
+                <th>Sucursal</th>
+                <th>Ventas</th>
+                <th>Monto</th>
+                <th>Cobrado</th>
+                <th>Utilidad</th>
+                <th>Margen</th>
+              </tr>
+            </thead>
+            <tbody>
+              {report.rows.map((row) => (
+                <tr key={row.branchId ?? "sin-sucursal"}>
+                  <td style={{ fontWeight: 600 }}>{row.branchName ?? "Sin sucursal"}</td>
+                  <td className="num">{row.count}</td>
+                  <td className="num">{formatMoney(row.totalAmount)}</td>
+                  <td className="num">{formatMoney(row.collectedAmount)}</td>
+                  <td className="num">{formatMoney(row.utility)}</td>
+                  <td className="num">{percent(row.marginPercent)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </>
+  );
+}
+
+/* ─────────────────── HU-REP-12 · tendencia de 12 meses ────────────────────── */
+
+const MONTH_NAMES = [
+  "ene",
+  "feb",
+  "mar",
+  "abr",
+  "may",
+  "jun",
+  "jul",
+  "ago",
+  "sep",
+  "oct",
+  "nov",
+  "dic",
+];
+
+function Tendencia({ report }: { report: TrendReport }) {
+  const bars: BarDatum[] = report.months.map((month) => {
+    const [year, mm] = month.month.split("-");
+    return {
+      key: month.month,
+      label: `${MONTH_NAMES[Number(mm) - 1] ?? mm} ${year}`,
+      value: Number(month.revenue),
+      display: `${formatMoney(month.revenue)} USD`,
+      note: `${month.salesCount} venta${month.salesCount === 1 ? "" : "s"} · utilidad ${formatMoney(
+        month.utility,
+      )}${month.closeRate === null ? "" : ` · cierre ${Math.round(month.closeRate * 100)} %`}`,
+    };
+  });
+
+  return (
+    <div className="card">
+      <h2 className="card-title">Tendencia de 12 meses</h2>
+      <p className="card-hint">
+        Ventas, utilidad y tasa de cierre mes a mes, hasta hoy. Mismas definiciones que
+        los KPI del período. {report.caveat}
+      </p>
+      <BarList data={bars} emptyText="Todavía no hay ventas registradas." />
+    </div>
+  );
+}
+
+/** Fecha corta, en la zona del usuario, para el detalle de cobranza. */
+function previewDate(iso: string): string {
+  return new Date(iso).toLocaleDateString("es-SV", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  });
 }
 
 /* ───────────────────── HU-REP-03 · embudo de conversión ───────────────────── */

@@ -75,6 +75,8 @@ export type ReportFilters = {
   from?: string;
   to?: string;
   advisorId?: string;
+  /** Sucursal de ORIGEN del cliente · HU-REP-09. */
+  branchId?: string;
   groupBy?: "destination" | "agency" | "advisor";
 };
 
@@ -114,9 +116,88 @@ export type PerformanceRow = {
   marginPercent: number | null;
   /** Fracción 0–1. Puede pasar de 1 (DM-03). */
   closeRate: number | null;
+  /** Lo vendido en el período equivalente anterior y su variación (HU-DAS-08). */
+  previousRevenue: string;
+  revenueDeltaPercent: number | null;
+  /** Cotizaciones enviadas vigentes, a hoy (DV-12). */
+  expectedCount: number;
+  expectedAmount: string;
+  /** Saldo en la calle, a hoy, y su tramo más viejo (DV-13). */
+  receivableBalance: string;
+  receivableOldestBucket: ReceivableBucket | null;
 };
 
-export type PerformanceReport = { period: ReportPeriod; rows: PerformanceRow[] };
+export type PerformanceReport = {
+  period: ReportPeriod;
+  previousPeriod: ReportPeriod;
+  rows: PerformanceRow[];
+};
+
+/* ── Reportería II · HU-REP-07 a HU-REP-12 ─────────────────────────────────── */
+
+export type ReceivableBucket =
+  | "current"
+  | "due_1_30"
+  | "due_31_60"
+  | "due_61_plus"
+  | "no_due_date";
+
+export type ExpectedReport = {
+  asOf: string;
+  totals: { count: number; amount: string };
+  /** Vigencias que vencen dentro de la ventana: la llamada de esta semana. */
+  expiringSoon: { days: number; count: number; amount: string };
+  byAdvisor: { id: string; name: string; count: number; amount: string }[];
+  byBranch: { branchId: string | null; name: string | null; count: number; amount: string }[];
+};
+
+export type ReceivablesReport = {
+  asOf: string;
+  totals: { count: number; balance: string };
+  buckets: { bucket: ReceivableBucket; count: number; balance: string }[];
+  byAdvisor: {
+    id: string;
+    name: string;
+    balance: string;
+    oldestBucket: ReceivableBucket | null;
+  }[];
+  byBranch: { branchId: string | null; name: string | null; count: number; balance: string }[];
+  rows: {
+    saleId: string;
+    code: string;
+    clientName: string | null;
+    advisorId: string | null;
+    branchId: string | null;
+    dueDate: string | null;
+    balance: string;
+    bucket: ReceivableBucket;
+  }[];
+};
+
+export type BranchSalesReport = {
+  period: ReportPeriod;
+  rows: {
+    branchId: string | null;
+    branchName: string | null;
+    count: number;
+    totalAmount: string;
+    collectedAmount: string;
+    utility: string;
+    marginPercent: number | null;
+  }[];
+};
+
+export type TrendReport = {
+  months: {
+    month: string;
+    salesCount: number;
+    revenue: string;
+    utility: string;
+    quotesSent: number;
+    closeRate: number | null;
+  }[];
+  caveat: string;
+};
 
 export type FunnelReport = {
   period: ReportPeriod;
@@ -154,6 +235,8 @@ export type ClientSummary = {
   estimatedValue: string | null;
   tagIds: string[];
   advisor: { id: string; fullName: string; initials: string } | null;
+  /** Sucursal de origen. `null` en prospectos de Meta aún sin asignarla. */
+  branch: { id: string; name: string | null } | null;
   /** Referencia al catálogo. Ya no es texto concatenado con la nota. */
   lostReason: { id: string; code: string | null; name: string | null } | null;
   /** Detalle libre de ese descarte en particular. */
@@ -249,6 +332,8 @@ export type CreateClientInput = {
   primaryPhone?: string;
   primaryEmail?: string;
   sourceChannel: SourceChannel;
+  /** Sucursal de origen · obligatoria en el alta manual. */
+  branchId: string;
   assignedAdvisorId?: string;
   tagIds?: string[];
   travelPreferences?: { destinations?: string[]; interests?: string[]; notes?: string };
@@ -268,6 +353,8 @@ export type UpdateClientInput = {
   fullName?: string;
   primaryPhone?: string | null;
   primaryEmail?: string | null;
+  /** Se puede corregir, nunca vaciar: el dashboard tabula por ella. */
+  branchId?: string;
   tagIds?: string[];
   travelPreferences?: {
     destinations?: string[];
@@ -427,6 +514,8 @@ export type QuoteVersionData = {
   conditions: string | null;
   clientNotes: string | null;
   internalNotes: string | null;
+  /** Anexo del PDF, en su orden. Vacío en las versiones anteriores al campo. */
+  annexImageIds: string[];
   issuedAt: string;
   validUntil: string;
   pdfFileId: string | null;
@@ -480,6 +569,12 @@ export type QuoteFilters = {
 export type QuoteInput = {
   clientId: string;
   /**
+   * Sucursal de origen PARA EL EXPEDIENTE, exigida solo cuando el cliente aún
+   * no la tiene (prospectos de Meta). Se guarda en el cliente, no en la
+   * cotización.
+   */
+  branchId?: string;
+  /**
    * Asesor responsable. Vacío = quien cotiza.
    *
    * Solo Gerente y Administrador pueden indicar a otro; el backend rechaza que
@@ -507,6 +602,11 @@ export type QuoteInput = {
   conditions?: string;
   clientNotes?: string;
   internalNotes?: string;
+  /**
+   * Anexo del PDF: ids de imágenes del expediente, en el orden en que se
+   * incrustan. En el PATCH, omitirlo conserva el anexo y `[]` lo quita.
+   */
+  annexImageIds?: string[];
   validUntil?: string;
 };
 
@@ -721,12 +821,41 @@ export type DashboardSummary = {
     outstandingAmount: string;
     averageTicket: string;
   };
+  /**
+   * Ingresos por sucursal de ORIGEN del cliente. `branchId: null` agrupa las
+   * ventas de expedientes anteriores al campo ("sin sucursal").
+   */
+  salesByBranch: {
+    branchId: string | null;
+    branchName: string | null;
+    count: number;
+    totalAmount: string;
+    collectedAmount: string;
+  }[];
   closeRate: {
     salesCreated: number;
     quotesSent: number;
     /** Fracción 0–1, o null si no hubo cotizaciones enviadas en el período. */
     rate: number | null;
     caveat: string;
+  };
+  /** Dinero esperado por cotizaciones, a hoy (HU-REP-07). */
+  expected: {
+    count: number;
+    amount: string;
+    expiringSoon: { days: number; count: number; amount: string };
+  };
+  /** El espejo del período equivalente anterior, para los deltas (HU-DAS-08). */
+  previous: {
+    period: { from: string; to: string };
+    sales: {
+      count: number;
+      totalAmount: string;
+      collectedAmount: string;
+      outstandingAmount: string;
+      averageTicket: string;
+    };
+    closeRate: { salesCreated: number; quotesSent: number; rate: number | null };
   };
   pending: {
     quotesNoAnswer: number;
@@ -923,6 +1052,23 @@ export const crmApi = {
    */
   lossReasons: (scope: LossReasonScope = "client", includeInactive = false) =>
     authed<LossReason[]>(`/loss-reasons${toQuery({ scope, includeInactive })}`),
+
+  /**
+   * Destinos sugeridos para el editor de cotizaciones.
+   *
+   * Son sugerencias, no un catálogo cerrado: el asesor puede escribir un
+   * destino que no está acá y no se agrega solo (lo cura el backoffice).
+   */
+  quoteDestinations: () =>
+    authed<{ id: string; name: string; status: string }[]>("/quote-destinations"),
+
+  /** Textos con los que nace una cotización. Editables en cada una. */
+  quoteDefaults: () =>
+    authed<{ conditions: string | null; clientNotes: string | null }>("/quote-defaults"),
+
+  /** Sucursales activas: origen del prospecto, obligatorio en el alta manual. */
+  branches: () =>
+    authed<{ id: string; name: string; status: string }[]>("/branches"),
 
   listClients: (filters: ClientFilters = {}) =>
     authed<Paginated<ClientSummary>>(`/clients${toQuery(filters)}`),
@@ -1355,6 +1501,22 @@ export const crmApi = {
   channelsReport: (filters: ReportFilters = {}) =>
     authed<ChannelsReport>(`/reports/canales${toQuery(filters)}`),
 
+  /** Dinero esperado por cotizaciones, a hoy (HU-REP-07, DV-12). */
+  expectedReport: (filters: ReportFilters = {}) =>
+    authed<ExpectedReport>(`/reports/esperado${toQuery(filters)}`),
+
+  /** Cuentas por cobrar con antigüedad, a hoy (HU-REP-08, DV-13). */
+  receivablesReport: (filters: ReportFilters = {}) =>
+    authed<ReceivablesReport>(`/reports/cobranza${toQuery(filters)}`),
+
+  /** Ventas por sucursal de origen del cliente (HU-REP-09). */
+  branchSalesReport: (filters: ReportFilters = {}) =>
+    authed<BranchSalesReport>(`/reports/sucursales${toQuery(filters)}`),
+
+  /** Tendencia de 12 meses hasta hoy (HU-REP-12). */
+  trendReport: (filters: ReportFilters = {}) =>
+    authed<TrendReport>(`/reports/tendencia${toQuery(filters)}`),
+
   /** Las dos listas de acción del acabado de Ventas. */
   travelAlerts: () =>
     authed<{ departingWithBalance: SaleSummary[]; endedInProgress: SaleSummary[] }>(
@@ -1367,10 +1529,21 @@ export const crmApi = {
    * Pasa por el API y no por un enlace directo: la descarga necesita la sesión,
    * y el backend aplica los mismos permisos que la pantalla.
    */
-  downloadReport: async (kind: string, filters: ReportFilters = {}) => {
+  downloadReport: async (
+    kind: string,
+    filters: ReportFilters = {},
+    format: "xlsx" | "pdf" = "xlsx",
+  ) => {
     const token = await getIdToken();
     if (!token) throw new Error("La sesión expiró. Volvé a iniciar sesión.");
-    return apiDownload(`/reports/${kind}/xlsx${toQuery(filters)}`, token);
+    return apiDownload(`/reports/${kind}/${format}${toQuery(filters)}`, token);
+  },
+
+  /** El libro completo del período: una hoja por reporte (HU-REP-11). */
+  downloadReportBook: async (filters: ReportFilters = {}, format: "xlsx" | "pdf" = "xlsx") => {
+    const token = await getIdToken();
+    if (!token) throw new Error("La sesión expiró. Volvé a iniciar sesión.");
+    return apiDownload(`/reports/libro/${format}${toQuery(filters)}`, token);
   },
 
   /** La cartera filtrada, con los mismos filtros del listado · `F6`. */

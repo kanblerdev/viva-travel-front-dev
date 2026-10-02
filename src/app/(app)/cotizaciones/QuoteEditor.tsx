@@ -49,8 +49,35 @@ type LineDraft = {
   endDate: string;
 };
 
+/**
+ * Imagen del anexo del PDF.
+ *
+ * Las nuevas viven como `File` hasta que se guarda la cotización: subirlas al
+ * elegirlas dejaría archivos huérfanos en el expediente cada vez que alguien
+ * abandona el formulario, y no existe un endpoint para borrarlos.
+ */
+type AnnexDraft = {
+  /** Clave local estable, para React y el mapa de vistas previas. */
+  key: string;
+  /** Id del archivo en el servidor; vacío mientras está pendiente de subir. */
+  id: string;
+  /** Pendiente de subir al guardar. `null` cuando ya vive en el servidor. */
+  file: File | null;
+  name: string;
+};
+
+/** Espejo de QUOTE_ANNEX_LIMITS del backend, que vuelve a validar al guardar. */
+const ANNEX_MAX_IMAGES = 6;
+const ANNEX_MIME_TYPES = ["image/jpeg", "image/png"];
+const ANNEX_MAX_BYTES = 10 * 1024 * 1024;
+
 type Draft = {
   clientId: string;
+  /**
+   * Sucursal de origen PARA EL EXPEDIENTE · solo cuando el cliente aún no la
+   * tiene (prospectos de Meta). Se guarda en el cliente, no en la cotización.
+   */
+  branchId: string;
   /** Vacío = quien cotiza. Solo Gerente y Administrador eligen a otro. */
   advisorId: string;
   quoteType: QuoteType;
@@ -72,6 +99,7 @@ type Draft = {
   conditions: string;
   clientNotes: string;
   internalNotes: string;
+  annexImages: AnnexDraft[];
   validUntil: string;
 };
 
@@ -84,6 +112,7 @@ function emptyDraft(clientId: string): Draft {
 
   return {
     clientId,
+    branchId: "",
     advisorId: "",
     quoteType: "own_package",
     supplierAgencyId: "",
@@ -106,6 +135,7 @@ function emptyDraft(clientId: string): Draft {
     conditions: "",
     clientNotes: "",
     internalNotes: "",
+    annexImages: [],
     validUntil: "",
   };
 }
@@ -114,6 +144,7 @@ function draftFromQuote(quote: QuoteDetail): Draft {
   const version = quote.currentVersion;
   return {
     clientId: quote.client?.id ?? "",
+    branchId: "",
     advisorId: quote.advisor?.id ?? "",
     quoteType: quote.quoteType,
     supplierAgencyId: quote.supplierAgency?.id ?? "",
@@ -141,6 +172,14 @@ function draftFromQuote(quote: QuoteDetail): Draft {
     conditions: version?.conditions ?? "",
     clientNotes: version?.clientNotes ?? "",
     internalNotes: version?.internalNotes ?? "",
+    // El nombre y la vista previa llegan después, por la URL firmada: acá solo
+    // importa QUÉ imágenes tiene la versión y en qué orden.
+    annexImages: (version?.annexImageIds ?? []).map((id) => ({
+      key: id,
+      id,
+      file: null,
+      name: "",
+    })),
     validUntil: isoDate(version?.validUntil ?? ""),
   };
 }
@@ -180,13 +219,40 @@ export function QuoteEditor({
   );
 
   const [draft, setDraft] = useState<Draft>(initial);
+  /**
+   * Contra qué se compara el borrador para la guardia de salida.
+   *
+   * Es estado y no el memo porque los textos predeterminados llegan después,
+   * por el API, y entran al borrador Y a la línea base a la vez: si solo
+   * entraran al borrador, abrir el editor y cerrarlo sin tocar nada ya
+   * preguntaría "¿salir y perderlos?" por un cambio que nadie hizo.
+   */
+  const [baseline, setBaseline] = useState<Draft>(initial);
   const [client, setClient] = useState<ClientSummary | null>(null);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [team, setTeam] = useState<TeamMember[]>([]);
+  /** Sugerencias de destino del catálogo del backoffice. */
+  const [destinations, setDestinations] = useState<string[]>([]);
+  /** Sucursales, solo para el expediente que llegó sin sucursal de origen. */
+  const [branches, setBranches] = useState<{ id: string; name: string }[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [saved, setSaved] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  /* ── Anexo de imágenes del PDF ────────────────────────────────────────────── */
+
+  /** Vista previa y nombre por clave: URL local para las nuevas, firmada para las guardadas. */
+  const [annexPreviews, setAnnexPreviews] = useState<
+    Record<string, { url: string; name: string }>
+  >({});
+  const [annexError, setAnnexError] = useState<string | null>(null);
+  const [annexDragOver, setAnnexDragOver] = useState(false);
+  const annexInputRef = useRef<HTMLInputElement | null>(null);
+  /** URLs de objeto creadas acá, para revocarlas al desmontar. */
+  const annexObjectUrls = useRef<string[]>([]);
+  /** Claves cuya URL firmada ya se pidió: un fallo no se reintenta en bucle. */
+  const annexRequested = useRef(new Set<string>());
 
   useEffect(() => {
     crmApi
@@ -194,6 +260,40 @@ export function QuoteEditor({
       .then((page) => setSuppliers(page.items))
       .catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    crmApi
+      .quoteDestinations()
+      .then((rows) => setDestinations(rows.map((row) => row.name)))
+      .catch(() => undefined);
+  }, []);
+
+  // Textos predeterminados · solo al CREAR. Una edición muestra lo que la
+  // versión ya tiene, y si el asesor escribió antes de que respondiera el API,
+  // lo suyo manda: la precarga no pisa nada.
+  useEffect(() => {
+    if (editing) return;
+    let vigente = true;
+    crmApi
+      .quoteDefaults()
+      .then((defaults) => {
+        if (!vigente || (!defaults.conditions && !defaults.clientNotes)) return;
+        const apply = (prev: Draft): Draft =>
+          prev.conditions || prev.clientNotes
+            ? prev
+            : {
+                ...prev,
+                conditions: defaults.conditions ?? "",
+                clientNotes: defaults.clientNotes ?? "",
+              };
+        setDraft(apply);
+        setBaseline(apply);
+      })
+      .catch(() => undefined);
+    return () => {
+      vigente = false;
+    };
+  }, [editing]);
 
   // Solo hace falta para el selector de responsable, que ven Gerente y
   // Administrador. Un Asesor cotiza siempre a su nombre.
@@ -223,8 +323,170 @@ export function QuoteEditor({
     };
   }, [clientId]);
 
+  // El expediente sin sucursal de origen la recibe acá: es el último momento
+  // en que puede faltar, porque el dashboard tabula los ingresos por sucursal.
+  const needsBranch = Boolean(client && !client.branch);
+  useEffect(() => {
+    if (!needsBranch || branches.length > 0) return;
+    crmApi
+      .branches()
+      .then(setBranches)
+      .catch(() => undefined);
+  }, [needsBranch, branches.length]);
+
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) =>
     setDraft((prev) => ({ ...prev, [key]: value }));
+
+  /**
+   * Suma imágenes al anexo, vengan del selector, de un arrastre o de Ctrl+V.
+   *
+   * Valida acá lo mismo que validará el backend —JPG o PNG, 10 MB, tope de
+   * cantidad— para que el rechazo se vea al cargar y no al guardar.
+   */
+  function addAnnexImages(incoming: File[]) {
+    if (incoming.length === 0 || submitting) return;
+
+    const problems: string[] = [];
+    let accepted: File[] = [];
+    for (const file of incoming) {
+      if (!ANNEX_MIME_TYPES.includes(file.type)) {
+        problems.push(`"${file.name || "imagen"}" no es JPG ni PNG.`);
+      } else if (file.size > ANNEX_MAX_BYTES) {
+        problems.push(`"${file.name || "imagen"}" supera los 10 MB.`);
+      } else {
+        accepted.push(file);
+      }
+    }
+
+    const room = ANNEX_MAX_IMAGES - draft.annexImages.length;
+    if (accepted.length > room) {
+      problems.push(`El anexo admite hasta ${ANNEX_MAX_IMAGES} imágenes.`);
+      accepted = accepted.slice(0, Math.max(0, room));
+    }
+
+    if (accepted.length > 0) {
+      const added = accepted.map((file, index) => {
+        const url = URL.createObjectURL(file);
+        annexObjectUrls.current.push(url);
+        return {
+          entry: {
+            key: `local-${Date.now()}-${index}-${Math.random().toString(36).slice(2)}`,
+            id: "",
+            file,
+            name: file.name || "captura.png",
+          },
+          url,
+        };
+      });
+      setAnnexPreviews((prev) => {
+        const next = { ...prev };
+        for (const item of added) next[item.entry.key] = { url: item.url, name: item.entry.name };
+        return next;
+      });
+      setDraft((prev) => ({
+        ...prev,
+        annexImages: [...prev.annexImages, ...added.map((item) => item.entry)],
+      }));
+    }
+
+    setAnnexError(problems.length > 0 ? problems.join(" ") : null);
+  }
+
+  // Ctrl+V en cualquier parte del editor: una captura recién tomada es el caso
+  // que motivó el anexo. Un pegado de texto sigue su curso normal.
+  const addAnnexImagesRef = useRef(addAnnexImages);
+  addAnnexImagesRef.current = addAnnexImages;
+
+  useEffect(() => {
+    function onPaste(event: ClipboardEvent) {
+      const files = Array.from(event.clipboardData?.items ?? [])
+        .filter((item) => item.kind === "file")
+        .map((item) => item.getAsFile())
+        .filter((file): file is File => Boolean(file));
+      if (files.length === 0) return;
+      event.preventDefault();
+      addAnnexImagesRef.current(files);
+    }
+    document.addEventListener("paste", onPaste);
+    return () => document.removeEventListener("paste", onPaste);
+  }, []);
+
+  // Vista previa de las imágenes ya guardadas: URL firmada, pedida una sola vez.
+  const annexImages = draft.annexImages;
+  useEffect(() => {
+    for (const entry of annexImages) {
+      if (!entry.id || annexRequested.current.has(entry.key)) continue;
+      annexRequested.current.add(entry.key);
+      crmApi
+        .fileUrl(entry.id)
+        .then(({ url, fileName }) =>
+          setAnnexPreviews((prev) =>
+            prev[entry.key] ? prev : { ...prev, [entry.key]: { url, name: fileName } },
+          ),
+        )
+        .catch(() => undefined);
+    }
+  }, [annexImages]);
+
+  useEffect(
+    () => () => {
+      for (const url of annexObjectUrls.current) URL.revokeObjectURL(url);
+    },
+    [],
+  );
+
+  function removeAnnexImage(key: string) {
+    setDraft((prev) => ({
+      ...prev,
+      annexImages: prev.annexImages.filter((entry) => entry.key !== key),
+    }));
+    setAnnexError(null);
+  }
+
+  function moveAnnexImage(index: number, direction: -1 | 1) {
+    const target = index + direction;
+    if (target < 0 || target >= draft.annexImages.length) return;
+    setDraft((prev) => {
+      const images = [...prev.annexImages];
+      [images[index], images[target]] = [images[target], images[index]];
+      return { ...prev, annexImages: images };
+    });
+  }
+
+  /**
+   * Sube las imágenes nuevas y devuelve los ids del anexo, en su orden.
+   *
+   * Cada subida queda anotada en el borrador apenas termina: si el guardado
+   * posterior falla, el reintento reutiliza el id en vez de subirla de nuevo.
+   */
+  async function uploadPendingAnnexImages(): Promise<string[]> {
+    const ids: string[] = [];
+    const uploaded = new Map<string, string>();
+    for (const entry of draft.annexImages) {
+      if (entry.id) {
+        ids.push(entry.id);
+        continue;
+      }
+      if (!entry.file) continue;
+      const stored = await crmApi.uploadFile(entry.file, {
+        clientId: draft.clientId,
+        fileType: "quote_annex",
+      });
+      uploaded.set(entry.key, stored.id);
+      ids.push(stored.id);
+    }
+    if (uploaded.size > 0) {
+      setDraft((prev) => ({
+        ...prev,
+        annexImages: prev.annexImages.map((entry) =>
+          uploaded.has(entry.key)
+            ? { ...entry, id: uploaded.get(entry.key)!, file: null }
+            : entry,
+        ),
+      }));
+    }
+    return ids;
+  }
 
   /**
    * Guardia de salida · hallazgo E2.
@@ -233,8 +495,8 @@ export function QuoteEditor({
    * llevaban una cotización de diez líneas sin preguntar nada.
    */
   const dirty = useMemo(
-    () => JSON.stringify(draft) !== JSON.stringify(initial),
-    [draft, initial],
+    () => JSON.stringify(draft) !== JSON.stringify(baseline),
+    [draft, baseline],
   );
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty && !saved;
@@ -301,6 +563,7 @@ export function QuoteEditor({
 
   const missing: string[] = [];
   if (!draft.clientId) missing.push("el cliente");
+  if (needsBranch && !draft.branchId) missing.push("la sucursal de origen");
   if (!draft.destination.trim()) missing.push("el destino");
   if (!isValidAmount(draft.finalPrice)) missing.push("el precio final");
   if (draft.quoteType === "supplier_package") {
@@ -337,6 +600,7 @@ export function QuoteEditor({
   function buildPayload(): QuoteInput {
     return {
       clientId: draft.clientId,
+      branchId: needsBranch ? draft.branchId || undefined : undefined,
       advisorId: draft.advisorId || undefined,
       quoteType: draft.quoteType,
       supplierAgencyId:
@@ -402,6 +666,9 @@ export function QuoteEditor({
       conditions: draft.conditions.trim() || null,
       clientNotes: draft.clientNotes.trim() || null,
       internalNotes: draft.internalNotes.trim() || null,
+      // Siempre viaja: el arreglo vacío es lo que QUITA el anexo en el backend,
+      // igual que `null` borra los textos.
+      annexImageIds: payload.annexImageIds ?? [],
       validUntil: payload.validUntil,
     };
   }
@@ -412,7 +679,9 @@ export function QuoteEditor({
     setError(null);
 
     try {
-      const payload = buildPayload();
+      // Primero las imágenes: sin sus ids no hay payload completo que mandar.
+      const annexImageIds = await uploadPendingAnnexImages();
+      const payload = { ...buildPayload(), annexImageIds };
       const result = quote
         ? await crmApi.updateQuote(quote.id, buildUpdate(payload))
         : await crmApi.createQuote(payload);
@@ -552,6 +821,39 @@ export function QuoteEditor({
             </div>
           </div>
 
+          {/* El expediente llegó sin sucursal de origen (entró solo por un
+              canal de Meta): cotizar es el último momento en que puede faltar,
+              y lo que se elija queda guardado EN EL EXPEDIENTE. */}
+          {needsBranch && (
+            <div style={{ marginTop: 14 }}>
+              <label className="label" htmlFor="branchId">
+                Sucursal de origen *
+              </label>
+              <select
+                id="branchId"
+                className="input"
+                required
+                value={draft.branchId}
+                onChange={(e) => set("branchId", e.target.value)}
+                disabled={submitting}
+              >
+                <option value="">
+                  {branches.length === 0 ? "Cargando sucursales…" : "Elegí la sucursal…"}
+                </option>
+                {branches.map((branch) => (
+                  <option key={branch.id} value={branch.id}>
+                    {branch.name}
+                  </option>
+                ))}
+              </select>
+              <div style={hint}>
+                <Icon name="target" width={12} height={12} />
+                Este expediente no tiene sucursal de origen; queda guardada en él
+                y tabula los ingresos del dashboard.
+              </div>
+            </div>
+          )}
+
           {/* Un Gerente puede cotizar a nombre de un asesor. El backend siempre
               lo admitió; sin este control, toda cotización creada por un gerente
               quedaba a su nombre y descuadraba el reporte por asesor. */}
@@ -588,15 +890,24 @@ export function QuoteEditor({
               <label className="label" htmlFor="destination">
                 Destino *
               </label>
+              {/* Sugerencias del catálogo del backoffice, SIN cerrar el campo:
+                  un destino que no está en la lista se escribe igual y queda
+                  solo en esta cotización. */}
               <input
                 id="destination"
                 className="input"
                 required
+                list="destino-sugerencias"
                 value={draft.destination}
                 onChange={(e) => set("destination", e.target.value)}
                 placeholder="Cancún"
                 disabled={submitting}
               />
+              <datalist id="destino-sugerencias">
+                {destinations.map((name) => (
+                  <option key={name} value={name} />
+                ))}
+              </datalist>
             </div>
             <div>
               <label className="label" htmlFor="validUntil">
@@ -959,6 +1270,172 @@ export function QuoteEditor({
           />
         </div>
 
+        {/* Anexo de imágenes del PDF: va entre las condiciones y las notas */}
+        <div className="card">
+          <div className="card-h">
+            <span className="ttl">Anexo de imágenes</span>
+            <span className="chip blue">Sale en el PDF · opcional</span>
+          </div>
+
+          <div
+            role="button"
+            tabIndex={0}
+            aria-label="Agregar imágenes al anexo"
+            onClick={() => annexInputRef.current?.click()}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                annexInputRef.current?.click();
+              }
+            }}
+            onDragOver={(event) => {
+              event.preventDefault();
+              setAnnexDragOver(true);
+            }}
+            onDragLeave={() => setAnnexDragOver(false)}
+            onDrop={(event) => {
+              event.preventDefault();
+              setAnnexDragOver(false);
+              addAnnexImages(Array.from(event.dataTransfer.files));
+            }}
+            style={{
+              border: `2px dashed ${annexDragOver ? "var(--orange)" : "var(--border)"}`,
+              background: annexDragOver ? "var(--orange-pale)" : "var(--bg-app)",
+              borderRadius: 10,
+              padding: "16px 14px",
+              textAlign: "center",
+              cursor: "pointer",
+              transition: "border-color .15s, background .15s",
+            }}
+          >
+            <div style={{ fontSize: 13, fontWeight: 600 }}>
+              Arrastrá una imagen, pegala con Ctrl+V o hacé clic para elegirla
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text-mute)", marginTop: 4 }}>
+              JPG o PNG · hasta 10 MB cada una · máximo {ANNEX_MAX_IMAGES}. Salen en el
+              PDF entre las condiciones y las notas.
+            </div>
+          </div>
+          <input
+            ref={annexInputRef}
+            type="file"
+            accept="image/png,image/jpeg"
+            multiple
+            hidden
+            onChange={(event) => {
+              addAnnexImages(Array.from(event.target.files ?? []));
+              // Permite volver a elegir el mismo archivo tras quitarlo.
+              event.target.value = "";
+            }}
+            disabled={submitting}
+          />
+
+          {annexError && (
+            <div style={{ ...hint, color: "var(--red)" }} role="alert">
+              <Icon name="target" width={12} height={12} />
+              {annexError}
+            </div>
+          )}
+
+          {draft.annexImages.length > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 12 }}>
+              {draft.annexImages.map((entry, index) => {
+                const preview = annexPreviews[entry.key];
+                const name = entry.name || preview?.name || `Imagen ${index + 1}`;
+                return (
+                  <div
+                    key={entry.key}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      border: "1px solid var(--border)",
+                      borderRadius: 10,
+                      padding: 6,
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: 88,
+                        height: 56,
+                        flex: "none",
+                        borderRadius: 6,
+                        overflow: "hidden",
+                        background: "var(--bg-app)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        color: "var(--text-mute)",
+                      }}
+                    >
+                      {preview ? (
+                        /* Vistas previas locales y URLs firmadas que caducan:
+                           next/image no aplica acá. */
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={preview.url}
+                          alt={name}
+                          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                        />
+                      ) : (
+                        <Icon name="image" />
+                      )}
+                    </div>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div
+                        style={{
+                          fontSize: 13,
+                          fontWeight: 600,
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                        title={name}
+                      >
+                        {name}
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--text-mute)" }}>
+                        {entry.file
+                          ? "Se sube al guardar"
+                          : "Guardada en el expediente"}
+                      </div>
+                    </div>
+                    <span style={{ display: "flex", gap: 4, flex: "none" }}>
+                      <button
+                        type="button"
+                        className="iconbtn"
+                        onClick={() => moveAnnexImage(index, -1)}
+                        disabled={submitting || index === 0}
+                        aria-label="Subir en el anexo"
+                      >
+                        <Icon name="arrow-up" />
+                      </button>
+                      <button
+                        type="button"
+                        className="iconbtn"
+                        onClick={() => moveAnnexImage(index, 1)}
+                        disabled={submitting || index === draft.annexImages.length - 1}
+                        aria-label="Bajar en el anexo"
+                      >
+                        <Icon name="arrow-down" />
+                      </button>
+                      <button
+                        type="button"
+                        className="iconbtn"
+                        onClick={() => removeAnnexImage(entry.key)}
+                        disabled={submitting}
+                        aria-label="Quitar del anexo"
+                      >
+                        <Icon name="trash" />
+                      </button>
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
         {/* Zona interna */}
         <div className="card" style={{ borderColor: "var(--navy-soft, var(--border))" }}>
           <div className="card-h">
@@ -1090,6 +1567,9 @@ export function QuoteEditor({
         draft={draft}
         clientName={client?.fullName ?? "—"}
         collapsed={!showPreview}
+        annexUrls={draft.annexImages
+          .map((entry) => annexPreviews[entry.key]?.url)
+          .filter((url): url is string => Boolean(url))}
       />
     </form>
   );
@@ -1159,11 +1639,14 @@ function ClientPreview({
   draft,
   clientName,
   collapsed,
+  annexUrls,
 }: {
   draft: Draft;
   clientName: string;
   /** Solo aplica en móvil; en escritorio la columna siempre está a la vista. */
   collapsed: boolean;
+  /** Vistas previas del anexo, en el orden en que saldrán en el PDF. */
+  annexUrls: string[];
 }) {
   const travelers =
     draft.children > 0
@@ -1305,6 +1788,40 @@ function ClientPreview({
               }}
             >
               {draft.conditions}
+            </div>
+          )}
+
+          {annexUrls.length > 0 && (
+            <div style={{ marginTop: 14 }}>
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "var(--text-mute)",
+                  fontWeight: 600,
+                  letterSpacing: "0.12em",
+                  textTransform: "uppercase",
+                }}
+              >
+                Anexo
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 6 }}>
+                {annexUrls.map((url, index) => (
+                  /* Igual que en el editor: URLs locales o firmadas, next/image
+                     no aplica. */
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    key={`${url}-${index}`}
+                    src={url}
+                    alt={`Imagen ${index + 1} del anexo`}
+                    style={{
+                      width: "100%",
+                      borderRadius: 8,
+                      border: "1px solid var(--border)",
+                      display: "block",
+                    }}
+                  />
+                ))}
+              </div>
             </div>
           )}
         </div>

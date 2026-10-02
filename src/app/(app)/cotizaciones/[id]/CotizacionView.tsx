@@ -973,7 +973,7 @@ function VersionDetail({
           Estos dos textos salían en el documento y no aparecían en ninguna
           pantalla del CRM: el asesor no podía revisar qué había mandado sin
           abrir el adjunto (hallazgo C3). */}
-      {(version.conditions || version.clientNotes) && (
+      {(version.conditions || version.clientNotes || version.annexImageIds.length > 0) && (
         <div className="card">
           <div className="card-h">
             <span className="ttl">Texto para el cliente</span>
@@ -996,8 +996,15 @@ function VersionDetail({
             </div>
           )}
 
-          {version.clientNotes && (
+          {version.annexImageIds.length > 0 && (
             <div style={{ marginTop: version.conditions ? 14 : 0 }}>
+              <span className="k">Anexo</span>
+              <AnnexGallery imageIds={version.annexImageIds} />
+            </div>
+          )}
+
+          {version.clientNotes && (
+            <div style={{ marginTop: version.conditions || version.annexImageIds.length > 0 ? 14 : 0 }}>
               <span className="k">Nota para el cliente</span>
               <div
                 style={{
@@ -1086,6 +1093,68 @@ function VersionDetail({
         )}
       </div>
     </>
+  );
+}
+
+/* ─────────────────────── Anexo de imágenes del PDF ───────────────────────── */
+
+/**
+ * Miniaturas del anexo de la versión, con su URL firmada.
+ *
+ * Mismo criterio que el hallazgo C3: lo que salió en el PDF tiene que poder
+ * revisarse desde el CRM sin abrir el adjunto.
+ */
+function AnnexGallery({ imageIds }: { imageIds: string[] }) {
+  const [urls, setUrls] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    let vigente = true;
+    for (const id of imageIds) {
+      crmApi
+        .fileUrl(id)
+        .then((file) => {
+          if (vigente) setUrls((prev) => ({ ...prev, [id]: file.url }));
+        })
+        .catch(() => undefined);
+    }
+    return () => {
+      vigente = false;
+    };
+  }, [imageIds]);
+
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 6 }}>
+      {imageIds.map((id, index) =>
+        urls[id] ? (
+          /* URL firmada que caduca: next/image no aplica. */
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            key={id}
+            src={urls[id]}
+            alt={`Imagen ${index + 1} del anexo`}
+            style={{
+              width: 148,
+              height: 96,
+              objectFit: "cover",
+              borderRadius: 8,
+              border: "1px solid var(--border)",
+            }}
+          />
+        ) : (
+          <div
+            key={id}
+            style={{
+              width: 148,
+              height: 96,
+              borderRadius: 8,
+              border: "1px solid var(--border)",
+              background: "var(--bg-app)",
+            }}
+            aria-label={`Imagen ${index + 1} del anexo, cargando`}
+          />
+        ),
+      )}
+    </div>
   );
 }
 

@@ -13,6 +13,7 @@ import { EmailLinks, PhoneLinks } from "@/components/ContactLinks";
 import { RelativeTime } from "@/components/RelativeTime";
 import { ApiError } from "@/lib/api/client";
 import {
+  crmApi,
   formatMoney,
   type ClientDetail,
   type Tag,
@@ -266,11 +267,20 @@ type CardProps = {
 };
 
 function ContactoCard({ client, canEdit, onSave }: CardProps) {
+  const [branches, setBranches] = useState<{ id: string; name: string }[]>([]);
+  useEffect(() => {
+    crmApi
+      .branches()
+      .then(setBranches)
+      .catch(() => undefined);
+  }, []);
+
   const edit = useInlineEdit(
     {
       fullName: client.fullName,
       primaryPhone: client.primaryPhone ?? "",
       primaryEmail: client.primaryEmail ?? "",
+      branchId: client.branch?.id ?? "",
     },
     (draft) =>
       onSave({
@@ -278,6 +288,8 @@ function ContactoCard({ client, canEdit, onSave }: CardProps) {
         // `null` vacía el campo; "" no pasa la validación de correo del backend.
         primaryPhone: draft.primaryPhone.trim() || null,
         primaryEmail: draft.primaryEmail.trim() || null,
+        // La sucursal se corrige, nunca se vacía: el dashboard tabula por ella.
+        branchId: draft.branchId || undefined,
       }),
   );
 
@@ -351,6 +363,30 @@ function ContactoCard({ client, canEdit, onSave }: CardProps) {
             </div>
           )}
 
+          <label className="label" htmlFor="branchSelect" style={{ marginTop: 14 }}>
+            Sucursal de origen
+          </label>
+          <select
+            id="branchSelect"
+            className="input"
+            value={edit.draft.branchId}
+            onChange={(e) => edit.setDraft((d) => ({ ...d, branchId: e.target.value }))}
+            disabled={edit.saving}
+          >
+            {/* Solo mientras no tiene: una vez asignada no se puede vaciar. */}
+            {!client.branch && <option value="">Sin asignar…</option>}
+            {branches.map((branch) => (
+              <option key={branch.id} value={branch.id}>
+                {branch.name}
+              </option>
+            ))}
+            {/* Una sucursal desactivada que el expediente ya tiene se muestra
+                con su nombre, aunque no se ofrezca para los nuevos. */}
+            {client.branch && !branches.some((b) => b.id === client.branch?.id) && (
+              <option value={client.branch.id}>{client.branch.name ?? "Sucursal"}</option>
+            )}
+          </select>
+
           <div className="field-hint" style={{ marginTop: 12 }}>
             <Icon name="lock" width={12} height={12} />
             El canal de origen no se edita: es el dato histórico de cómo llegó el
@@ -379,6 +415,12 @@ function ContactoCard({ client, canEdit, onSave }: CardProps) {
         <div>
           <span className="k">Canal de origen</span>
           <span className="v">{SOURCE_CHANNEL_LABEL[client.sourceChannel]}</span>
+        </div>
+        <div>
+          <span className="k">Sucursal de origen</span>
+          <span className="v" style={client.branch ? undefined : { color: "var(--text-mute)" }}>
+            {client.branch?.name ?? "Sin asignar · se pedirá al cotizar"}
+          </span>
         </div>
       </div>
     </EditableCard>

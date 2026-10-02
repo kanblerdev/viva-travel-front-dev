@@ -339,6 +339,10 @@ export function NewProspectModal({
   // el origen equivocado para siempre, y con eso se degradan el filtro por canal
   // y el reporte de canal.
   const [channel, setChannel] = useState<SourceChannel | "">("");
+  // Igual que el canal, sin valor por defecto: la sucursal de origen tabula
+  // los ingresos del dashboard, y una preseleccionada sesgaría ese reporte.
+  const [branchId, setBranchId] = useState("");
+  const [branches, setBranches] = useState<{ id: string; name: string }[]>([]);
   const [destinations, setDestinations] = useState("");
   const [estimatedValue, setEstimatedValue] = useState("");
   const [advisorId, setAdvisorId] = useState(defaultAdvisorId ?? "");
@@ -346,6 +350,13 @@ export function NewProspectModal({
   const [notes, setNotes] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    crmApi
+      .branches()
+      .then(setBranches)
+      .catch(() => undefined);
+  }, []);
 
   // DM-14: el backend rechaza el alta sin medio de contacto. Se anticipa acá
   // para no gastar un viaje al servidor en un error evitable.
@@ -364,6 +375,7 @@ export function NewProspectModal({
         primaryPhone: phone.trim() || undefined,
         primaryEmail: email.trim() || undefined,
         sourceChannel: channel as SourceChannel,
+        branchId,
         assignedAdvisorId: advisorId || undefined,
         tagIds: tagIds.length > 0 ? tagIds : undefined,
         travelPreferences:
@@ -494,6 +506,29 @@ export function NewProspectModal({
           </div>
         </div>
 
+        <div style={{ marginTop: 14 }}>
+          <label className="label" htmlFor="branch">
+            Sucursal de origen *
+          </label>
+          <select
+            id="branch"
+            className="input"
+            required
+            value={branchId}
+            onChange={(e) => setBranchId(e.target.value)}
+            disabled={submitting}
+          >
+            <option value="">
+              {branches.length === 0 ? "Cargando sucursales…" : "Elegí la sucursal…"}
+            </option>
+            {branches.map((branch) => (
+              <option key={branch.id} value={branch.id}>
+                {branch.name}
+              </option>
+            ))}
+          </select>
+        </div>
+
         <div className="modal-grid" style={{ marginTop: 14 }}>
           <div>
             <label className="label" htmlFor="destination">
@@ -576,16 +611,16 @@ export function NewProspectModal({
           <button type="button" className="btn ghost" onClick={onClose} disabled={submitting}>
             Cancelar
           </button>
-          {channel === "" && hasContact && (
+          {hasContact && (channel === "" || branchId === "") && (
             <span style={{ ...hintStyle, marginTop: 0, marginRight: "auto" }}>
               <Icon name="target" width={12} height={12} />
-              Falta el canal de origen.
+              {channel === "" ? "Falta el canal de origen." : "Falta la sucursal de origen."}
             </span>
           )}
           <button
             type="submit"
             className="btn primary"
-            disabled={submitting || !hasContact || channel === ""}
+            disabled={submitting || !hasContact || channel === "" || branchId === ""}
           >
             {submitting ? "Creando…" : "Crear prospecto"}
           </button>

@@ -13,6 +13,7 @@ import {
   type DashboardSummary,
   type FunnelReport,
   type SaleSummary,
+  type TrendReport,
   type UtilityReport,
 } from "@/lib/api/crm";
 import { CHANNEL_LABEL, PIPELINE_STAGE_LABEL, type Channel } from "@/lib/domain/enums";
@@ -105,6 +106,38 @@ export function DashboardView() {
           <div style={subtleStyle}>
             {data ? `${data.sales.count} operaciones · ticket ${formatMoney(data.sales.averageTicket)}` : "Cargando…"}
           </div>
+          {data && (
+            <Delta
+              current={Number(data.sales.totalAmount)}
+              previous={Number(data.previous.sales.totalAmount)}
+            />
+          )}
+        </div>
+
+        {/* HU-REP-07 · lo que viene en camino, a hoy. Es foto, no período: no
+            lleva delta. */}
+        <div className="stat">
+          <div className="label">
+            Dinero esperado
+            <div className="ico blue">
+              <Icon name="doc" width={14} height={14} />
+            </div>
+          </div>
+          <div className="val">
+            {data ? formatMoney(data.expected.amount) : "—"}
+            <span className="u">USD</span>
+          </div>
+          <div style={subtleStyle}>
+            {data
+              ? `${data.expected.count} cotizaciones vigentes`
+              : "Cargando…"}
+          </div>
+          {data && data.expected.expiringSoon.count > 0 && (
+            <div style={{ fontSize: 11, color: "var(--orange-deep)", marginTop: 4, fontWeight: 600 }}>
+              {data.expected.expiringSoon.count} vencen en {data.expected.expiringSoon.days} días
+              · {formatMoney(data.expected.expiringSoon.amount)}
+            </div>
+          )}
         </div>
 
         <div className="stat">
@@ -140,6 +173,15 @@ export function DashboardView() {
               ? `${data.closeRate.salesCreated} ventas ÷ ${data.closeRate.quotesSent} cotizaciones enviadas`
               : "Cargando…"}
           </div>
+          {/* En puntos, no en variación relativa: "del 40 % al 52 %" se lee
+              directo; "+30 %" sobre una tasa confunde. */}
+          {data && data.previous.closeRate.rate !== null && closeRate !== null && closeRate !== undefined && (
+            <Delta
+              current={Math.round(closeRate * 100)}
+              previous={Math.round(data.previous.closeRate.rate * 100)}
+              unit="pts"
+            />
+          )}
         </div>
 
         <div className="stat">
@@ -275,6 +317,62 @@ export function DashboardView() {
         </div>
       </div>
 
+      {/* Ingresos por sucursal de ORIGEN del cliente (2 oct 2026). El alta de
+          prospecto exige la sucursal y cotizar la completa para los que
+          entraron solos por Meta; acá se tabula lo vendido y lo cobrado. */}
+      <div className="card" style={{ marginTop: 14 }}>
+        <div className="card-h">
+          <span className="ttl">Ingresos por sucursal</span>
+          <span className="chip blue">Según el origen del cliente</span>
+        </div>
+
+        {!data ? (
+          <div style={{ fontSize: 13, color: "var(--text-mute)" }}>Cargando…</div>
+        ) : data.salesByBranch.length === 0 ? (
+          <div style={{ fontSize: 13, color: "var(--text-mute)", lineHeight: 1.7 }}>
+            Sin ventas en el período. La tabla se arma con la sucursal de origen de
+            cada cliente.
+          </div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table className="t">
+              <thead>
+                <tr>
+                  <th>Sucursal</th>
+                  <th className="num">Ventas</th>
+                  <th className="num">Monto</th>
+                  <th className="num">Cobrado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.salesByBranch.map((row) => (
+                  <tr key={row.branchId ?? "none"}>
+                    <td style={{ fontWeight: 600 }}>
+                      {row.branchName ?? (
+                        <span style={{ color: "var(--text-mute)", fontWeight: 500 }}>
+                          Sin sucursal · expedientes anteriores al campo
+                        </span>
+                      )}
+                    </td>
+                    <td className="num">{row.count}</td>
+                    <td className="num" style={{ fontWeight: 700 }}>
+                      {formatMoney(row.totalAmount)}
+                    </td>
+                    <td className="num" style={{ color: "var(--green)" }}>
+                      {formatMoney(row.collectedAmount)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* HU-REP-12 · la película: sin tendencia, cada cifra del mes es una
+          foto sin contexto. */}
+      <Tendencia advisorId={advisorId} />
+
       {/*
         HU-DAS-03 a HU-DAS-06 · lo que el Sprint 8 agrega al tablero.
 
@@ -288,6 +386,132 @@ export function DashboardView() {
       <AnalisisDelPeriodo advisorId={advisorId} />
     </>
   );
+}
+
+/**
+ * La variación contra el período equivalente anterior · HU-DAS-08.
+ *
+ * Verde cuando sube y rojo cuando baja; sin base (anterior = 0) no se muestra
+ * nada: un "+∞ %" es ruido. Con `unit="pts"` compara en puntos directos, que
+ * es como se lee una tasa.
+ */
+function Delta({
+  current,
+  previous,
+  unit,
+}: {
+  current: number;
+  previous: number;
+  unit?: "pts";
+}) {
+  if (unit !== "pts" && previous === 0) return null;
+
+  const value =
+    unit === "pts"
+      ? Math.round((current - previous) * 10) / 10
+      : Math.round(((current - previous) / previous) * 1000) / 10;
+  if (value === 0) {
+    return (
+      <div style={{ fontSize: 11, color: "var(--text-mute)", marginTop: 4 }}>
+        Igual que el período anterior
+      </div>
+    );
+  }
+
+  const up = value > 0;
+  return (
+    <div
+      style={{
+        fontSize: 11,
+        fontWeight: 700,
+        marginTop: 4,
+        color: up ? "var(--green)" : "var(--red)",
+        display: "flex",
+        alignItems: "center",
+        gap: 4,
+      }}
+    >
+      <Icon name={up ? "arrow-up" : "arrow-down"} width={11} height={11} />
+      {up ? "+" : ""}
+      {value} {unit === "pts" ? "pts" : "%"}
+      <span style={{ color: "var(--text-mute)", fontWeight: 500 }}>vs período anterior</span>
+    </div>
+  );
+}
+
+/**
+ * Tendencia de 12 meses · HU-REP-12.
+ *
+ * Mismo endpoint que el reporte; barras de un solo color, el criterio del
+ * Sprint 8: el orden y el largo cargan la información, no el arcoíris.
+ */
+function Tendencia({ advisorId }: { advisorId?: string }) {
+  const [trend, setTrend] = useState<TrendReport | null>(null);
+
+  useEffect(() => {
+    let vigente = true;
+    crmApi
+      .trendReport(advisorId ? { advisorId } : {})
+      .then((loaded) => {
+        if (vigente) setTrend(loaded);
+      })
+      .catch(() => undefined);
+    return () => {
+      vigente = false;
+    };
+  }, [advisorId]);
+
+  const bars: BarDatum[] = (trend?.months ?? []).map((month) => ({
+    key: month.month,
+    label: monthLabel(month.month),
+    value: Number(month.revenue),
+    display: `${formatMoney(month.revenue)} USD`,
+    note: `${month.salesCount} venta${month.salesCount === 1 ? "" : "s"} · utilidad ${formatMoney(
+      month.utility,
+    )}${month.closeRate === null ? "" : ` · cierre ${Math.round(month.closeRate * 100)} %`}`,
+  }));
+
+  return (
+    <div className="card" style={{ marginTop: 14 }}>
+      <div className="card-h">
+        <span className="ttl">Tendencia · últimos 12 meses</span>
+        <Link href="/reportes" className="btn ghost tiny">
+          Ver reportes
+        </Link>
+      </div>
+      {!trend ? (
+        <div style={{ fontSize: 13, color: "var(--text-mute)" }}>Cargando…</div>
+      ) : (
+        <>
+          <BarList data={bars} emptyText="Todavía no hay ventas registradas." />
+          <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 12, lineHeight: 1.6 }}>
+            {trend.caveat}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+const MONTH_NAMES = [
+  "ene",
+  "feb",
+  "mar",
+  "abr",
+  "may",
+  "jun",
+  "jul",
+  "ago",
+  "sep",
+  "oct",
+  "nov",
+  "dic",
+];
+
+/** `2026-10` → `oct 2026`, sin pasar por `Date`: la clave ya es calendario. */
+function monthLabel(key: string): string {
+  const [year, month] = key.split("-");
+  return `${MONTH_NAMES[Number(month) - 1] ?? month} ${year}`;
 }
 
 function PendingRow({
