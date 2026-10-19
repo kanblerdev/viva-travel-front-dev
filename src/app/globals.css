@@ -1806,3 +1806,143 @@ table.t .th-sort.is-active svg { opacity: 1; color: var(--orange); }
   max-width: 460px;
 }
 .state-card-error { font-size: 14px; font-weight: 600; color: var(--red); }
+
+/* ===== Tablero · retícula (18 oct 2026) =====
+ * Filas de tarjetas de altura parecida, para que ninguna deje huecos: seis
+ * indicadores en una línea; tendencia + pendientes; las dos lecturas de las
+ * etapas con las mismas ocho filas; y tres tarjetas cortas (sucursales,
+ * ventas por canal, conversaciones). */
+
+/* Seis indicadores. En pantallas medianas, dos filas de tres —el dinero y el
+   embudo— y en angostas tres de dos: nunca una fila con un indicador solo. */
+.stats.six { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+@media (max-width: 1500px) {
+  .stats.six { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 1000px) {
+  .stats.six { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 600px) {
+  .stats.six { grid-template-columns: 1fr; }
+}
+
+.dash-grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.dash-state { margin: 0; font-size: 13px; color: var(--text-mute); line-height: 1.7; }
+.dash-foot { font-size: 11px; color: var(--text-faint); margin-top: 12px; line-height: 1.6; }
+
+/* La tarjeta de tendencia comparte fila con Pendientes, que suele ser más
+   alta: el área de dibujo crece para llenar la tarjeta en vez de dejar un
+   hueco bajo el gráfico. */
+.dash-trend { display: flex; flex-direction: column; }
+.dash-trend .tchart { flex: 1 1 auto; display: flex; flex-direction: column; }
+.dash-trend .tchart-plot { flex: 1 1 auto; }
+/* Cabecera: título con su resumen debajo, y a la derecha el selector de
+   indicador y el enlace a Reportes. */
+.dash-trend .card-h { flex-wrap: wrap; align-items: flex-start; }
+.dash-trend-sum { margin-top: 3px; font-size: 12px; color: var(--text-mute); line-height: 1.5; }
+.dash-trend-sum b { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
+.dash-trend-ctl { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.viewtabs.small { padding: 2px; }
+.viewtabs.small button { padding: 4px 9px; font-size: 12px; }
+
+@media (max-width: 1366px) {
+  /* Tres tarjetas no entran con una tabla dentro: dos y la tercera a lo ancho. */
+  .dash-grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dash-grid-3 > :last-child { grid-column: 1 / -1; }
+}
+@media (max-width: 700px) {
+  .dash-grid-3 { grid-template-columns: 1fr; }
+  .dash-grid-3 > :last-child { grid-column: auto; }
+}
+
+/* ===== Tendencia · columnas de doce meses =====
+ * Una columna por mes y un solo color, como el resto de los gráficos del CRM.
+ * Marcas finas (≤ 24 px, punta redondeada, base cuadrada), rejilla de hilo con
+ * la marca del eje encima, y la cifra directa solo sobre el mes más alto; el
+ * resto lo dan la burbuja y la tabla plegada. */
+.tchart { position: relative; }
+.tchart-plot { position: relative; padding-top: 18px; display: flex; flex-direction: column; }
+.tchart-inner { position: relative; flex: 1 1 auto; min-height: 0; }
+.tchart-grid {
+  position: absolute; left: 0; right: 0;
+  border-top: 1px solid var(--border-soft);
+  pointer-events: none;
+}
+.tchart-grid.is-base { border-top-color: var(--border); }
+.tchart-grid span {
+  position: absolute; left: 0; top: -7px;
+  font-size: 10px; line-height: 14px; color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  background: var(--white); padding-right: 6px;
+}
+.tchart-cols { position: absolute; inset: 0 0 0 44px; display: flex; align-items: stretch; }
+.tchart-col {
+  flex: 1 1 0; min-width: 0; position: relative;
+  display: flex; align-items: flex-end; justify-content: center;
+  background: none; border: 0; padding: 0; margin: 0;
+  font: inherit; cursor: default; border-radius: 6px;
+}
+.tchart-col:hover, .tchart-col.is-active { background: rgba(42, 120, 214, 0.06); }
+.tchart-col:focus-visible { outline: 2px solid var(--orange); outline-offset: -2px; }
+.tchart-bar {
+  display: block; width: 60%; max-width: 24px;
+  background: var(--chart-bar);
+  border-radius: 4px 4px 0 0;
+  transition: height 200ms ease;
+}
+/* Un mes con cero se ve como una base de 2 px: medido, y dio cero. Sin dato
+   (`is-null`) no se dibuja nada. */
+.tchart-bar:not(.is-null) { min-height: 2px; }
+.tchart-bar.is-partial { opacity: 0.5; }
+.tchart-col:hover .tchart-bar, .tchart-col.is-active .tchart-bar { filter: brightness(0.85); }
+.tchart-cap {
+  position: absolute; left: 50%; transform: translateX(-50%);
+  font-size: 11px; line-height: 14px; font-weight: 700; color: var(--text);
+  font-variant-numeric: tabular-nums; white-space: nowrap; pointer-events: none;
+}
+.tchart-tip {
+  position: absolute; top: 0; left: 50%; transform: translateX(-50%); z-index: 3;
+  display: flex; flex-direction: column; gap: 2px;
+  min-width: 150px; padding: 8px 10px; border-radius: 8px;
+  background: var(--text); color: #fff;
+  font-size: 11px; line-height: 1.5; text-align: left; white-space: nowrap;
+  box-shadow: 0 6px 18px rgba(11, 27, 58, 0.18);
+  pointer-events: none;
+}
+.tchart-tip b {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.7); margin-bottom: 2px;
+}
+.tchart-tip span { display: flex; gap: 8px; align-items: baseline; }
+/* La cifra manda y la etiqueta la sigue: quien pasa el puntero ya sabe de qué mes se trata. */
+.tchart-tip em { font-style: normal; font-weight: 700; font-variant-numeric: tabular-nums; min-width: 58px; }
+.tchart-tip i { font-style: normal; color: rgba(255, 255, 255, 0.72); }
+/* En los bordes la burbuja se pega al borde en vez de salirse de la tarjeta. */
+.tchart-col:nth-child(-n+2) .tchart-tip { left: 0; transform: none; }
+.tchart-col:nth-last-child(-n+2) .tchart-tip { left: auto; right: 0; transform: none; }
+.tchart-x { display: flex; padding-left: 44px; margin-top: 6px; }
+.tchart-x span {
+  flex: 1 1 0; min-width: 0; text-align: center;
+  font-size: 11px; color: var(--text-mute); white-space: nowrap; overflow: hidden;
+}
+/* El año, en su propia línea y solo donde cambia. */
+.tchart-x small { display: block; font-size: 10px; color: var(--text-faint); }
+.tchart-empty { margin: 8px 0 0; font-size: 12px; color: var(--text-mute); text-align: center; }
+.tchart-table { margin-top: 10px; }
+.tchart-table summary {
+  cursor: pointer; list-style: none;
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; font-weight: 600; color: var(--text-mute);
+}
+.tchart-table summary::-webkit-details-marker { display: none; }
+.tchart-table summary::before { content: "▸"; font-size: 10px; }
+.tchart-table[open] summary::before { content: "▾"; }
+.tchart-table table.t { margin-top: 8px; font-size: 12px; }
+.tchart-table table.t th, .tchart-table table.t td { padding: 7px 10px; }
+@media (max-width: 600px) {
+  /* En un celular no entran doce etiquetas: se muestra una sí y una no. */
+  .tchart-x span:nth-child(even) { visibility: hidden; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tchart-bar { transition: none; }
+}

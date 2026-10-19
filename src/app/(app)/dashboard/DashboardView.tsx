@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { Icon } from "@/components/Icon";
 import { BarList, type BarDatum } from "@/components/BarList";
+import { TrendChart, type TrendPoint } from "@/components/TrendChart";
 import { useSession } from "@/lib/auth/AuthProvider";
 import { ApiError } from "@/lib/api/client";
 import {
@@ -16,7 +17,12 @@ import {
   type TrendReport,
   type UtilityReport,
 } from "@/lib/api/crm";
-import { CHANNEL_LABEL, PIPELINE_STAGE_LABEL, type Channel } from "@/lib/domain/enums";
+import {
+  CHANNEL_LABEL,
+  PIPELINE_STAGE_LABEL,
+  type Channel,
+  type PipelineStageCode,
+} from "@/lib/domain/enums";
 
 const CHANNEL_CLASS: Record<string, string> = {
   whatsapp: "wa",
@@ -25,14 +31,24 @@ const CHANNEL_CLASS: Record<string, string> = {
   other: "",
 };
 
+/** `undefined` = cargando, `null` = falló, y el dato cuando llegó. */
+type Loadable<T> = T | null | undefined;
+
 /**
- * Dashboard · HU-DAS-01 a HU-DAS-07.
+ * Dashboard · HU-DAS-01 a HU-DAS-08.
  *
  * Todos los números vienen calculados del backend. La pantalla no deriva
  * ninguno: los mismos indicadores se reproducen igual en Reportes, porque
  * salen de los mismos endpoints. Dos cálculos del mismo KPI terminan siempre
  * discrepando, y que el tablero y el reporte no coincidan por el mismo período
  * es peor que no tener el tablero.
+ *
+ * La retícula (18 oct 2026) va en filas de altura parecida para que ninguna
+ * deje huecos: seis indicadores en una línea (tres y tres en pantallas
+ * medianas); la tendencia junto a los pendientes; las dos lecturas de las
+ * etapas lado a lado, con las mismas ocho filas; y tres tarjetas cortas con
+ * sucursales y canales. Cada tarjeta conserva su sitio mientras carga o si
+ * falla, así el tablero no salta.
  */
 export function DashboardView() {
   const { user } = useSession();
@@ -56,6 +72,8 @@ export function DashboardView() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  const analysis = useAnalisis(advisorId);
 
   if (error) {
     return (
@@ -91,7 +109,12 @@ export function DashboardView() {
         </div>
       </div>
 
-      <div className="stats">
+      {/* Fila 1 · los seis indicadores del período en una sola línea. Antes
+          eran cinco y el quinto quedaba solo en una segunda fila, con tres
+          huecos al lado. Van en dos grupos de tres —el dinero (ventas,
+          utilidad, por cobrar) y el embudo (esperado, abiertas, cierre)— que es
+          como se parten cuando la pantalla no da para seis. */}
+      <div className="stats six">
         <div className="stat">
           <div className="label">
             Ventas del período
@@ -104,7 +127,9 @@ export function DashboardView() {
             <span className="u">USD</span>
           </div>
           <div style={subtleStyle}>
-            {data ? `${data.sales.count} operaciones · ticket ${formatMoney(data.sales.averageTicket)}` : "Cargando…"}
+            {data
+              ? `${data.sales.count} ${plural(data.sales.count, "operación", "operaciones")} · ticket ${formatMoney(data.sales.averageTicket)}`
+              : "Cargando…"}
           </div>
           {data && (
             <Delta
@@ -112,6 +137,46 @@ export function DashboardView() {
               previous={Number(data.previous.sales.totalAmount)}
             />
           )}
+        </div>
+
+        {/* HU-DAS-03 · lo que dejó el período. Es un indicador más del período,
+            así que va entre los indicadores y no en una tarjeta aparte. */}
+        <div className="stat">
+          <div className="label">
+            Utilidad del período
+            <div className="ico green">
+              <Icon name="chart" width={14} height={14} />
+            </div>
+          </div>
+          <div className="val">
+            {analysis.utility ? formatMoney(analysis.utility.totals.utility) : "—"}
+            <span className="u">USD</span>
+          </div>
+          <div style={subtleStyle}>
+            {analysis.utility === undefined
+              ? "Cargando…"
+              : analysis.utility === null
+                ? "No se pudo cargar"
+                : `margen ${marginLabel(analysis.utility.totals.marginPercent)} · gestión ${formatMoney(analysis.utility.totals.managementCommission)} · agencia ${formatMoney(analysis.utility.totals.agencyCommission)}`}
+          </div>
+        </div>
+
+        <div className="stat">
+          <div className="label">
+            Por cobrar
+            <div className="ico purple">
+              <Icon name="tag" width={14} height={14} />
+            </div>
+          </div>
+          <div className="val" style={{ color: "var(--orange-deep)" }}>
+            {data ? formatMoney(data.pending.outstandingAmount) : "—"}
+            <span className="u">USD</span>
+          </div>
+          <div style={subtleStyle}>
+            {data
+              ? `${data.pending.salesWithBalance} ${plural(data.pending.salesWithBalance, "venta con saldo", "ventas con saldo")}`
+              : "Cargando…"}
+          </div>
         </div>
 
         {/* HU-REP-07 · lo que viene en camino, a hoy. Es foto, no período: no
@@ -129,13 +194,14 @@ export function DashboardView() {
           </div>
           <div style={subtleStyle}>
             {data
-              ? `${data.expected.count} cotizaciones vigentes`
+              ? `${data.expected.count} ${plural(data.expected.count, "cotización vigente", "cotizaciones vigentes")}`
               : "Cargando…"}
           </div>
           {data && data.expected.expiringSoon.count > 0 && (
             <div style={{ fontSize: 11, color: "var(--orange-deep)", marginTop: 4, fontWeight: 600 }}>
-              {data.expected.expiringSoon.count} vencen en {data.expected.expiringSoon.days} días
-              · {formatMoney(data.expected.expiringSoon.amount)}
+              {data.expected.expiringSoon.count}{" "}
+              {plural(data.expected.expiringSoon.count, "vence", "vencen")} en{" "}
+              {data.expected.expiringSoon.days} días · {formatMoney(data.expected.expiringSoon.amount)}
             </div>
           )}
         </div>
@@ -155,7 +221,10 @@ export function DashboardView() {
           </div>
         </div>
 
-        <div className="stat">
+        {/* La aclaración de la fórmula (una venta puede venir de una cotización
+            de otro período) va acá, en el indicador al que pertenece, y no al
+            pie del embudo como antes. */}
+        <div className="stat" title={data?.closeRate.caveat}>
           <div className="label">
             Tasa de cierre
             <div className="ico green">
@@ -170,7 +239,7 @@ export function DashboardView() {
           </div>
           <div style={subtleStyle}>
             {data
-              ? `${data.closeRate.salesCreated} ventas ÷ ${data.closeRate.quotesSent} cotizaciones enviadas`
+              ? `${data.closeRate.salesCreated} ${plural(data.closeRate.salesCreated, "venta", "ventas")} de ${data.closeRate.quotesSent} ${plural(data.closeRate.quotesSent, "cotización enviada", "cotizaciones enviadas")}`
               : "Cargando…"}
           </div>
           {/* En puntos, no en variación relativa: "del 40 % al 52 %" se lee
@@ -184,206 +253,34 @@ export function DashboardView() {
           )}
         </div>
 
-        <div className="stat">
-          <div className="label">
-            Por cobrar
-            <div className="ico purple">
-              <Icon name="tag" width={14} height={14} />
-            </div>
-          </div>
-          <div className="val" style={{ color: "var(--orange-deep)" }}>
-            {data ? formatMoney(data.pending.outstandingAmount) : "—"}
-            <span className="u">USD</span>
-          </div>
-          <div style={subtleStyle}>
-            {data ? `${data.pending.salesWithBalance} ventas con saldo` : "Cargando…"}
-          </div>
-        </div>
       </div>
 
+      {/* Fila 2 · la película y la lista de hoy. La tendencia va arriba y a lo
+          ancho porque es el contexto de todos los números del período;
+          Pendientes a su lado, porque es lo que hay que hacer hoy. */}
       <div className="row-split" style={{ marginTop: 14 }}>
-        <div className="card">
-          <div className="card-h">
-            <span className="ttl">Embudo · oportunidades abiertas</span>
-            <Link href="/clientes" className="btn ghost tiny">
-              Ver tablero
-            </Link>
-          </div>
-
-          {!data ? (
-            <div style={{ fontSize: 13, color: "var(--text-mute)" }}>Cargando…</div>
-          ) : data.openOpportunities.count === 0 ? (
-            <div style={{ fontSize: 13, color: "var(--text-mute)", lineHeight: 1.7 }}>
-              No hay expedientes en juego. Los prospectos nuevos aparecen acá en cuanto se
-              cargan.
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {data.openOpportunities.byStage
-                .filter((stage) => stage.stageCode)
-                .sort((a, b) => b.count - a.count)
-                .map((stage) => (
-                  <div key={stage.stageCode}>
-                    <div
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        fontSize: 12,
-                        marginBottom: 4,
-                      }}
-                    >
-                      <span>{PIPELINE_STAGE_LABEL[stage.stageCode!]}</span>
-                      <span className="num">
-                        <b>{stage.count}</b>
-                        <span style={{ color: "var(--text-mute)", marginLeft: 8 }}>
-                          {formatMoney(stage.estimatedValue)}
-                        </span>
-                      </span>
-                    </div>
-                    <div
-                      style={{
-                        background: "var(--border-soft)",
-                        height: 6,
-                        borderRadius: 3,
-                        overflow: "hidden",
-                      }}
-                    >
-                      <div
-                        style={{
-                          background: "var(--orange)",
-                          height: "100%",
-                          width: `${percentageOfMax(stage.count, data.openOpportunities.byStage)}%`,
-                        }}
-                      />
-                    </div>
-                  </div>
-                ))}
-            </div>
-          )}
-
-          {data && (
-            <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 14, lineHeight: 1.6 }}>
-              {data.closeRate.caveat}
-            </div>
-          )}
-        </div>
-
-        <div className="card">
-          <div className="card-h">
-            <span className="ttl">Pendientes</span>
-          </div>
-
-          {!data ? (
-            <div style={{ fontSize: 13, color: "var(--text-mute)" }}>Cargando…</div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <PendingRow
-                label={`Cotizaciones sin respuesta`}
-                hint={`${data.pending.noAnswerBusinessDays} días hábiles desde el envío`}
-                value={data.pending.quotesNoAnswer}
-                href="/cotizaciones?status=sent"
-                tone="orange"
-              />
-              <PendingRow
-                label="Cotizaciones por vencer"
-                hint={`Vigencia en los próximos ${data.pending.expiringSoonDays} días`}
-                value={data.pending.quotesExpiringSoon}
-                href="/cotizaciones"
-                tone="amber"
-              />
-              <PendingRow
-                label="Cotizaciones vencidas"
-                hint="La vigencia ya pasó"
-                value={data.pending.quotesOverdue}
-                href="/cotizaciones?status=expired"
-                tone="red"
-              />
-              <PendingRow
-                label="Cobros atrasados"
-                hint="Fecha límite de pago vencida"
-                value={data.pending.salesPaymentOverdue}
-                href="/ventas"
-                tone="red"
-              />
-              <PendingRow
-                label="Viajes por cerrar"
-                hint="Terminaron y siguen en curso"
-                value={data.pending.salesToComplete}
-                href="/ventas?saleStatus=in_progress"
-                tone="blue"
-              />
-            </div>
-          )}
-        </div>
+        <Tendencia advisorId={advisorId} />
+        <PendientesCard data={data} />
       </div>
 
-      {/* Ingresos por sucursal de ORIGEN del cliente (2 oct 2026). El alta de
-          prospecto exige la sucursal y cotizar la completa para los que
-          entraron solos por Meta; acá se tabula lo vendido y lo cobrado. */}
-      <div className="card" style={{ marginTop: 14 }}>
-        <div className="card-h">
-          <span className="ttl">Ingresos por sucursal</span>
-          <span className="chip blue">Según el origen del cliente</span>
-        </div>
-
-        {!data ? (
-          <div style={{ fontSize: 13, color: "var(--text-mute)" }}>Cargando…</div>
-        ) : data.salesByBranch.length === 0 ? (
-          <div style={{ fontSize: 13, color: "var(--text-mute)", lineHeight: 1.7 }}>
-            Sin ventas en el período. La tabla se arma con la sucursal de origen de
-            cada cliente.
-          </div>
-        ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table className="t">
-              <thead>
-                <tr>
-                  <th>Sucursal</th>
-                  <th className="num">Ventas</th>
-                  <th className="num">Monto</th>
-                  <th className="num">Cobrado</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.salesByBranch.map((row) => (
-                  <tr key={row.branchId ?? "none"}>
-                    <td style={{ fontWeight: 600 }}>
-                      {row.branchName ?? (
-                        <span style={{ color: "var(--text-mute)", fontWeight: 500 }}>
-                          Sin sucursal · expedientes anteriores al campo
-                        </span>
-                      )}
-                    </td>
-                    <td className="num">{row.count}</td>
-                    <td className="num" style={{ fontWeight: 700 }}>
-                      {formatMoney(row.totalAmount)}
-                    </td>
-                    <td className="num" style={{ color: "var(--green)" }}>
-                      {formatMoney(row.collectedAmount)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {/* HU-REP-12 · la película: sin tendencia, cada cifra del mes es una
-          foto sin contexto. */}
-      <Tendencia advisorId={advisorId} />
-
-      {/*
-        HU-DAS-03 a HU-DAS-06 · lo que el Sprint 8 agrega al tablero.
-
-        Sale de los MISMOS endpoints que Reportes, no de un cálculo propio: que
-        el tablero y el reporte discrepen por el mismo período es peor que no
-        tener el tablero. Acá va el resumen; el corte por fecha y la exportación
-        viven en Reportes, que es adonde lleva el enlace.
-      */}
       <AlertasDeViaje />
 
-      <AnalisisDelPeriodo advisorId={advisorId} />
+      {/* Fila 3 · las etapas, dos veces y con las mismas ocho filas en el mismo
+          orden: cuántos llegaron a cada una en el período (acumulado) y cuántos
+          están hoy en cada una. Se leen una contra la otra, y al compartir
+          estructura las dos tarjetas miden lo mismo. */}
+      <div className="report-grid" style={{ marginTop: 14 }}>
+        <EmbudoPeriodoCard funnel={analysis.funnel} />
+        <EmbudoAbiertoCard data={data} funnel={analysis.funnel} />
+      </div>
+
+      {/* Fila 4 · de dónde viene el dinero y por dónde se habla: tres tarjetas
+          cortas, de la misma altura. */}
+      <div className="dash-grid-3" style={{ marginTop: 14 }}>
+        <SucursalesCard data={data} />
+        <CanalVentasCard channels={analysis.channels} />
+        <CanalConversacionesCard channels={analysis.channels} />
+      </div>
     </>
   );
 }
@@ -439,14 +336,30 @@ function Delta({
   );
 }
 
+/* ───────────────────── HU-REP-12 · tendencia de 12 meses ──────────────────── */
+
+type Metric = "revenue" | "utility" | "sales" | "closeRate";
+
+const METRICS: { key: Metric; label: string }[] = [
+  { key: "revenue", label: "Ingresos" },
+  { key: "utility", label: "Utilidad" },
+  { key: "sales", label: "Ventas" },
+  { key: "closeRate", label: "Cierre" },
+];
+
 /**
  * Tendencia de 12 meses · HU-REP-12.
  *
- * Mismo endpoint que el reporte; barras de un solo color, el criterio del
- * Sprint 8: el orden y el largo cargan la información, no el arcoíris.
+ * Mismo endpoint que el reporte. Un gráfico de columnas con un selector de
+ * indicador en vez de doce barras apiladas: la silueta de los doce meses se
+ * ve entera, y el resumen de la cabecera da los totales sin tener que sumar
+ * mes por mes. La burbuja de cada mes trae los cuatro indicadores, se mire el
+ * que se mire. El último mes es el que corre: se dibuja más claro para que no
+ * se lea como una caída.
  */
 function Tendencia({ advisorId }: { advisorId?: string }) {
-  const [trend, setTrend] = useState<TrendReport | null>(null);
+  const [trend, setTrend] = useState<Loadable<TrendReport>>(undefined);
+  const [metric, setMetric] = useState<Metric>("revenue");
 
   useEffect(() => {
     let vigente = true;
@@ -455,42 +368,122 @@ function Tendencia({ advisorId }: { advisorId?: string }) {
       .then((loaded) => {
         if (vigente) setTrend(loaded);
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (vigente) setTrend(null);
+      });
     return () => {
       vigente = false;
     };
   }, [advisorId]);
 
-  const bars: BarDatum[] = (trend?.months ?? []).map((month) => ({
-    key: month.month,
-    label: monthLabel(month.month),
-    value: Number(month.revenue),
-    display: `${formatMoney(month.revenue)} USD`,
-    note: `${month.salesCount} venta${month.salesCount === 1 ? "" : "s"} · utilidad ${formatMoney(
-      month.utility,
-    )}${month.closeRate === null ? "" : ` · cierre ${Math.round(month.closeRate * 100)} %`}`,
-  }));
+  const months = trend?.months ?? [];
+  const isMoney = metric === "revenue" || metric === "utility";
+  const format = (value: number) =>
+    isMoney ? money(value) : metric === "closeRate" ? `${value} %` : String(value);
+  const formatTick = (value: number) => (isMoney ? compactMoney(value) : format(value));
+
+  const points: TrendPoint[] = months.map((month, index) => {
+    const current = index === months.length - 1;
+    const [year, mm] = month.month.split("-");
+    return {
+      key: month.month,
+      label: MONTH_NAMES[Number(mm) - 1] ?? mm,
+      // El año solo donde cambia (y en el primer mes), para no repetirlo doce veces.
+      sublabel: index === 0 || mm === "01" ? `'${year.slice(2)}` : undefined,
+      value: metricValue(month, metric),
+      partial: current,
+      tooltip: {
+        title: `${monthLabel(month.month)}${current ? " · en curso" : ""}`,
+        rows: [
+          { value: formatMoney(month.revenue), label: "ingresos" },
+          { value: String(month.salesCount), label: plural(month.salesCount, "venta", "ventas") },
+          { value: formatMoney(month.utility), label: "utilidad" },
+          { value: percent(month.closeRate), label: "cierre" },
+        ],
+      },
+    };
+  });
+
+  const totalRevenue = months.reduce((sum, month) => sum + Number(month.revenue), 0);
+  const totalUtility = months.reduce((sum, month) => sum + Number(month.utility), 0);
+  const totalSales = months.reduce((sum, month) => sum + month.salesCount, 0);
+  const average = months.length > 0 ? totalRevenue / months.length : 0;
 
   return (
-    <div className="card" style={{ marginTop: 14 }}>
+    <div className="card dash-trend">
       <div className="card-h">
-        <span className="ttl">Tendencia · últimos 12 meses</span>
-        <Link href="/reportes" className="btn ghost tiny">
-          Ver reportes
-        </Link>
+        <div>
+          <span className="ttl">Tendencia · últimos 12 meses</span>
+          {trend && (
+            <div className="dash-trend-sum">
+              Ingresos <b>{money(totalRevenue)}</b> · <b>{totalSales}</b>{" "}
+              {plural(totalSales, "venta", "ventas")} · utilidad <b>{money(totalUtility)}</b> ·
+              promedio <b>{money(average)}</b>/mes
+            </div>
+          )}
+        </div>
+        <div className="dash-trend-ctl">
+          <div className="viewtabs small" role="tablist" aria-label="Indicador de la tendencia">
+            {METRICS.map((option) => (
+              <button
+                key={option.key}
+                type="button"
+                role="tab"
+                aria-selected={metric === option.key}
+                onClick={() => setMetric(option.key)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <Link href="/reportes" className="btn ghost tiny">
+            Ver reportes
+          </Link>
+        </div>
       </div>
-      {!trend ? (
-        <div style={{ fontSize: 13, color: "var(--text-mute)" }}>Cargando…</div>
+
+      {trend === undefined ? (
+        <p className="dash-state" style={{ minHeight: 204 }}>
+          Cargando…
+        </p>
+      ) : trend === null ? (
+        <p className="dash-state">No se pudo cargar la tendencia.</p>
       ) : (
         <>
-          <BarList data={bars} emptyText="Todavía no hay ventas registradas." />
-          <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 12, lineHeight: 1.6 }}>
-            {trend.caveat}
-          </div>
+          <TrendChart
+            points={points}
+            format={format}
+            formatTick={formatTick}
+            emptyText="Todavía no hay ventas registradas."
+            table={{
+              head: ["Mes", "Ingresos", "Ventas", "Utilidad", "Cierre"],
+              rows: months.map((month) => [
+                monthLabel(month.month),
+                formatMoney(month.revenue),
+                String(month.salesCount),
+                formatMoney(month.utility),
+                percent(month.closeRate),
+              ]),
+            }}
+          />
+          {metric === "closeRate" && <div className="dash-foot">{trend.caveat}</div>}
         </>
       )}
     </div>
   );
+}
+
+function metricValue(month: TrendReport["months"][number], metric: Metric): number | null {
+  switch (metric) {
+    case "revenue":
+      return Number(month.revenue);
+    case "utility":
+      return Number(month.utility);
+    case "sales":
+      return month.salesCount;
+    case "closeRate":
+      return month.closeRate === null ? null : Math.round(month.closeRate * 100);
+  }
 }
 
 const MONTH_NAMES = [
@@ -512,6 +505,86 @@ const MONTH_NAMES = [
 function monthLabel(key: string): string {
   const [year, month] = key.split("-");
   return `${MONTH_NAMES[Number(month) - 1] ?? month} ${year}`;
+}
+
+function percent(rate: number | null): string {
+  return rate === null ? "—" : `${Math.round(rate * 100)} %`;
+}
+
+/** El margen viene en porcentaje con dos decimales; `.00` sobra. */
+function marginLabel(margin: number | null): string {
+  return margin === null ? "—" : `${margin.toFixed(2).replace(/\.00$/, "")} %`;
+}
+
+function money(value: number): string {
+  return formatMoney(String(value));
+}
+
+/** Marcas del eje: `$2K`, `$1.5K`, `$150K`, `$1.2M`. */
+function compactMoney(value: number): string {
+  const abs = Math.abs(value);
+  const short = (amount: number) => String(Math.round(amount * 10) / 10);
+  if (abs >= 1_000_000) return `$${short(value / 1_000_000)}M`;
+  if (abs >= 1_000) return `$${short(value / 1_000)}K`;
+  return `$${short(value)}`;
+}
+
+function plural(count: number, one: string, many: string): string {
+  return count === 1 ? one : many;
+}
+
+/* ─────────────────────── HU-DAS-07 · pendientes ───────────────────────────── */
+
+function PendientesCard({ data }: { data: DashboardSummary | null }) {
+  return (
+    <div className="card">
+      <div className="card-h">
+        <span className="ttl">Pendientes</span>
+      </div>
+
+      {!data ? (
+        <p className="dash-state">Cargando…</p>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <PendingRow
+            label="Cotizaciones sin respuesta"
+            hint={`${data.pending.noAnswerBusinessDays} días hábiles desde el envío`}
+            value={data.pending.quotesNoAnswer}
+            href="/cotizaciones?status=sent"
+            tone="orange"
+          />
+          <PendingRow
+            label="Cotizaciones por vencer"
+            hint={`Vigencia en los próximos ${data.pending.expiringSoonDays} días`}
+            value={data.pending.quotesExpiringSoon}
+            href="/cotizaciones"
+            tone="amber"
+          />
+          <PendingRow
+            label="Cotizaciones vencidas"
+            hint="La vigencia ya pasó"
+            value={data.pending.quotesOverdue}
+            href="/cotizaciones?status=expired"
+            tone="red"
+          />
+          <PendingRow
+            label="Cobros atrasados"
+            hint="Fecha límite de pago vencida"
+            value={data.pending.salesPaymentOverdue}
+            href="/ventas"
+            tone="red"
+          />
+          <PendingRow
+            label="Viajes por cerrar"
+            hint="Terminaron y siguen en curso"
+            value={data.pending.salesToComplete}
+            href="/ventas?saleStatus=in_progress"
+            tone="blue"
+          />
+        </div>
+      )}
+    </div>
+  );
 }
 
 function PendingRow({
@@ -559,43 +632,89 @@ function PendingRow({
   );
 }
 
-/** Ancho relativo a la etapa más poblada: el embudo se lee por comparación. */
-function percentageOfMax(count: number, stages: { count: number }[]): number {
-  const max = Math.max(...stages.map((stage) => stage.count), 1);
-  return Math.round((count / max) * 100);
-}
-
-function formatPeriod(period: { from: string; to: string }): string {
-  const from = new Date(period.from);
-  const to = new Date(period.to);
-  const formatter = new Intl.DateTimeFormat("es-SV", { day: "2-digit", month: "short" });
-  return `${formatter.format(from)} al ${formatter.format(to)}`;
-}
-
-const subtleStyle = { fontSize: 11, color: "var(--text-mute)", marginTop: 6 } as const;
-
-/* ──────────────────── HU-DAS-03 a HU-DAS-06 · análisis ───────────────────── */
+/* ──────────────────── Etapas: hoy (HU-DAS-02) y período (HU-DAS-04) ───────── */
 
 /**
- * Utilidad, embudo y canales del período.
+ * Dónde están HOY los expedientes en juego. Es la foto del tablero Kanban.
  *
- * Se piden por separado del resumen principal y de forma tolerante: si una de
- * las tres falla, el tablero sigue mostrando lo demás. Son datos de análisis, no
- * la operación del día: perderlos un rato no impide trabajar.
+ * Lleva las mismas filas y el mismo orden que "Cuántos llegaron a cada etapa",
+ * incluidas las etapas vacías: las dos tarjetas se leen una contra la otra, y
+ * si cada una mostrara solo sus etapas con datos dejarían de alinearse. El
+ * orden y los nombres salen del embudo (el catálogo manda); mientras carga, de
+ * la lista fija del dominio.
  */
-function AnalisisDelPeriodo({ advisorId }: { advisorId?: string }) {
-  const [utility, setUtility] = useState<UtilityReport | null>(null);
-  const [funnel, setFunnel] = useState<FunnelReport | null>(null);
-  const [channels, setChannels] = useState<ChannelsReport | null>(null);
+function EmbudoAbiertoCard({
+  data,
+  funnel,
+}: {
+  data: DashboardSummary | null;
+  funnel: Loadable<FunnelReport>;
+}) {
+  const stages: { code: PipelineStageCode; name: string }[] =
+    funnel?.stages.map((stage) => ({ code: stage.code, name: stage.name })) ??
+    (Object.keys(PIPELINE_STAGE_LABEL) as PipelineStageCode[])
+      .filter((code) => code !== "lost_discarded")
+      .map((code) => ({ code, name: PIPELINE_STAGE_LABEL[code] }));
 
-  useEffect(() => {
-    const filters = advisorId ? { advisorId } : {};
-    crmApi.utilityReport(filters).then(setUtility).catch(() => setUtility(null));
-    crmApi.funnelReport(filters).then(setFunnel).catch(() => setFunnel(null));
-    crmApi.channelsReport(filters).then(setChannels).catch(() => setChannels(null));
-  }, [advisorId]);
+  const byCode = new Map(
+    (data?.openOpportunities.byStage ?? [])
+      .filter((stage) => stage.stageCode)
+      .map((stage) => [stage.stageCode!, stage] as const),
+  );
+  const bars: BarDatum[] = stages.map(({ code, name }) => {
+    const stage = byCode.get(code);
+    return {
+      key: code,
+      label: name,
+      value: stage?.count ?? 0,
+      display: String(stage?.count ?? 0),
+      note: stage ? `${formatMoney(stage.estimatedValue)} en valor estimado` : "Sin expedientes",
+    };
+  });
+  // Una etapa con expedientes que no esté en la lista (no debería pasar) se
+  // agrega al final antes que esconderla.
+  for (const stage of byCode.values()) {
+    if (!stages.some((known) => known.code === stage.stageCode)) {
+      bars.push({
+        key: stage.stageCode!,
+        label: PIPELINE_STAGE_LABEL[stage.stageCode!] ?? stage.stageCode!,
+        value: stage.count,
+        display: String(stage.count),
+        note: `${formatMoney(stage.estimatedValue)} en valor estimado`,
+      });
+    }
+  }
 
-  const funnelBars: BarDatum[] =
+  return (
+    <div className="card">
+      <div className="card-h">
+        <span className="ttl">Oportunidades abiertas por etapa</span>
+        <Link href="/clientes" className="btn ghost tiny">
+          Ver tablero
+        </Link>
+      </div>
+      <p className="card-hint">
+        Dónde están <b>hoy</b> los expedientes en juego y cuánto valen. Es la foto del
+        tablero, no el período.
+      </p>
+      {!data ? (
+        <p className="dash-state">Cargando…</p>
+      ) : (
+        <BarList
+          data={bars}
+          emptyText="No hay expedientes en juego. Los prospectos nuevos aparecen acá en cuanto se cargan."
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * El embudo de verdad · HU-DAS-04: cuántos LLEGARON a cada etapa en el período.
+ * Es acumulado, por eso el porcentaje entre pasos significa algo.
+ */
+function EmbudoPeriodoCard({ funnel }: { funnel: Loadable<FunnelReport> }) {
+  const bars: BarDatum[] =
     funnel?.stages.map((stage, index) => {
       const previous = index > 0 ? funnel.stages[index - 1].count : null;
       const rate = previous && previous > 0 ? Math.round((stage.count / previous) * 100) : null;
@@ -604,11 +723,147 @@ function AnalisisDelPeriodo({ advisorId }: { advisorId?: string }) {
         label: stage.name,
         value: stage.count,
         display: String(stage.count),
-        note: rate === null ? undefined : `${rate} % de la etapa anterior`,
+        note: rate === null ? "Entraron en el período" : `${rate} % de la etapa anterior`,
       };
     }) ?? [];
 
-  const salesBars: BarDatum[] =
+  return (
+    <div className="card">
+      <div className="card-h">
+        <span className="ttl">Cuántos llegaron a cada etapa</span>
+        <Link href="/reportes" className="btn ghost tiny">
+          Ver reportes
+        </Link>
+      </div>
+      <p className="card-hint">
+        De los expedientes que entraron en el período. Es <b>acumulado</b>: quien hoy está en
+        &ldquo;Venta cerrada&rdquo; pasó por todas las anteriores.
+      </p>
+      <CardBody state={funnel} failed="No se pudo cargar el embudo.">
+        <BarList data={bars} emptyText="No entró ningún expediente en el período." />
+      </CardBody>
+    </div>
+  );
+}
+
+/* ─────────────────────── Ingresos por sucursal (2 oct 2026) ───────────────── */
+
+/**
+ * Ingresos por sucursal de ORIGEN del cliente. El alta de prospecto exige la
+ * sucursal y cotizar la completa para los que entraron solos por Meta; acá se
+ * tabula lo vendido y lo cobrado.
+ */
+function SucursalesCard({ data }: { data: DashboardSummary | null }) {
+  return (
+    <div className="card">
+      <div className="card-h">
+        <span className="ttl">Ingresos por sucursal</span>
+        <span className="chip blue">Según el origen del cliente</span>
+      </div>
+
+      {!data ? (
+        <p className="dash-state">Cargando…</p>
+      ) : data.salesByBranch.length === 0 ? (
+        <p className="dash-state">
+          Sin ventas en el período. La tabla se arma con la sucursal de origen de cada
+          cliente.
+        </p>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table className="t">
+            <thead>
+              <tr>
+                <th>Sucursal</th>
+                <th className="num">Ventas</th>
+                <th className="num">Monto</th>
+                <th className="num">Cobrado</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.salesByBranch.map((row) => (
+                <tr key={row.branchId ?? "none"}>
+                  <td style={{ fontWeight: 600 }}>
+                    {row.branchName ?? (
+                      <span style={{ color: "var(--text-mute)", fontWeight: 500 }}>
+                        Sin sucursal · expedientes anteriores al campo
+                      </span>
+                    )}
+                  </td>
+                  <td className="num">{row.count}</td>
+                  <td className="num" style={{ fontWeight: 700 }}>
+                    {formatMoney(row.totalAmount)}
+                  </td>
+                  <td className="num" style={{ color: "var(--green)" }}>
+                    {formatMoney(row.collectedAmount)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ──────────────── HU-DAS-03, HU-DAS-05 y HU-DAS-06 · análisis ─────────────── */
+
+/**
+ * Utilidad, embudo y canales del período.
+ *
+ * Se piden por separado del resumen principal y de forma tolerante: si una de
+ * las tres falla, el tablero sigue mostrando lo demás. Son datos de análisis,
+ * no la operación del día: perderlos un rato no impide trabajar. Al cambiar el
+ * filtro se conserva lo anterior hasta que llega lo nuevo, para que la
+ * pantalla no salte.
+ */
+function useAnalisis(advisorId?: string) {
+  const [utility, setUtility] = useState<Loadable<UtilityReport>>(undefined);
+  const [funnel, setFunnel] = useState<Loadable<FunnelReport>>(undefined);
+  const [channels, setChannels] = useState<Loadable<ChannelsReport>>(undefined);
+
+  useEffect(() => {
+    let vigente = true;
+    const filters = advisorId ? { advisorId } : {};
+    const keep =
+      <T,>(set: (value: Loadable<T>) => void) =>
+      (promise: Promise<T>) =>
+        promise
+          .then((value) => {
+            if (vigente) set(value);
+          })
+          .catch(() => {
+            if (vigente) set(null);
+          });
+    void keep(setUtility)(crmApi.utilityReport(filters));
+    void keep(setFunnel)(crmApi.funnelReport(filters));
+    void keep(setChannels)(crmApi.channelsReport(filters));
+    return () => {
+      vigente = false;
+    };
+  }, [advisorId]);
+
+  return { utility, funnel, channels };
+}
+
+/** Cargando o fallido, en el mismo sitio que ocupará el contenido. */
+function CardBody<T>({
+  state,
+  failed,
+  children,
+}: {
+  state: Loadable<T>;
+  failed: string;
+  children: ReactNode;
+}) {
+  if (state === undefined) return <p className="dash-state">Cargando…</p>;
+  if (state === null) return <p className="dash-state">{failed}</p>;
+  return <>{children}</>;
+}
+
+/** HU-DAS-05 · de dónde vienen los que compran. El chip del canal lleva la identidad. */
+function CanalVentasCard({ channels }: { channels: Loadable<ChannelsReport> }) {
+  const bars: BarDatum[] =
     channels?.sales.map((row) => ({
       key: row.channel,
       label: (
@@ -618,10 +873,28 @@ function AnalisisDelPeriodo({ advisorId }: { advisorId?: string }) {
       ),
       value: Number(row.revenue),
       display: `${formatMoney(row.revenue)} USD`,
-      note: `${row.count} venta${row.count === 1 ? "" : "s"}`,
+      note: `${row.count} ${plural(row.count, "venta", "ventas")}`,
     })) ?? [];
 
-  const conversationBars: BarDatum[] =
+  return (
+    <div className="card">
+      <div className="card-h">
+        <span className="ttl">Ventas por canal</span>
+        <Link href="/reportes" className="btn ghost tiny">
+          Ver reportes
+        </Link>
+      </div>
+      <p className="card-hint">Por el canal de origen del cliente, en el período.</p>
+      <CardBody state={channels} failed="No se pudieron cargar los canales.">
+        <BarList data={bars} emptyText="Sin ventas en el período." />
+      </CardBody>
+    </div>
+  );
+}
+
+/** HU-DAS-06 · por dónde se habla. Es otra pregunta que la anterior: va en su tarjeta. */
+function CanalConversacionesCard({ channels }: { channels: Loadable<ChannelsReport> }) {
+  const bars: BarDatum[] =
     channels?.conversations.map((row) => ({
       key: row.channel,
       label: (
@@ -631,78 +904,22 @@ function AnalisisDelPeriodo({ advisorId }: { advisorId?: string }) {
       ),
       value: row.conversations,
       display: String(row.conversations),
-      note: `${row.messages} mensaje${row.messages === 1 ? "" : "s"}`,
+      note: `${row.messages} ${plural(row.messages, "mensaje", "mensajes")}`,
     })) ?? [];
 
   return (
-    <>
-      {/* HU-DAS-03 · lo que dejó el período. Tres cifras, no un gráfico: son
-          magnitudes distintas y lo que se lee es el número. */}
-      {utility && (
-        <div className="card" style={{ marginTop: 14 }}>
-          <div className="card-h">
-            <span className="ttl">Utilidad del período</span>
-            <Link href="/reportes" className="btn ghost tiny">
-              Ver reportes
-            </Link>
-          </div>
-          <div className="dash-money">
-            <div>
-              <span className="k">Comisión de gestión</span>
-              <span className="v">{formatMoney(utility.totals.managementCommission)}</span>
-            </div>
-            <div>
-              <span className="k">Comisión de agencia</span>
-              <span className="v">{formatMoney(utility.totals.agencyCommission)}</span>
-            </div>
-            <div>
-              <span className="k">Utilidad total</span>
-              <span className="v">{formatMoney(utility.totals.utility)}</span>
-            </div>
-            <div>
-              <span className="k">Margen</span>
-              <span className="v">
-                {utility.totals.marginPercent === null
-                  ? "—"
-                  : `${utility.totals.marginPercent.toFixed(2).replace(/\.00$/, "")} %`}
-              </span>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div className="report-grid" style={{ marginTop: 14 }}>
-        {/* HU-DAS-04 · el embudo de verdad: cuántos LLEGARON a cada etapa. */}
-        {funnel && (
-          <div className="card">
-            <div className="card-h">
-              <span className="ttl">Cuántos llegaron a cada etapa</span>
-            </div>
-            <BarList data={funnelBars} emptyText="No entró ningún expediente este mes." />
-          </div>
-        )}
-
-        {/* HU-DAS-05 y HU-DAS-06 · de dónde vienen los que compran y por dónde
-            se habla. Dos listas y no un gráfico apilado: son dos preguntas. */}
-        {channels && (
-          <div className="card">
-            <div className="card-h">
-              <span className="ttl">Por canal</span>
-            </div>
-            <div className="dash-channels">
-              <div>
-                <p className="card-hint">Ventas por canal de origen</p>
-                <BarList data={salesBars} emptyText="Sin ventas este mes." />
-              </div>
-              <div>
-                <p className="card-hint">Conversaciones por canal</p>
-                <BarList data={conversationBars} emptyText="Sin conversaciones este mes." />
-              </div>
-            </div>
-          </div>
-        )}
+    <div className="card">
+      <div className="card-h">
+        <span className="ttl">Conversaciones por canal</span>
+        <Link href="/bandeja" className="btn ghost tiny">
+          Ver bandeja
+        </Link>
       </div>
-    </>
+      <p className="card-hint">Conversaciones abiertas en el período y cuántos mensajes llevan.</p>
+      <CardBody state={channels} failed="No se pudieron cargar los canales.">
+        <BarList data={bars} emptyText="Sin conversaciones en el período." />
+      </CardBody>
+    </div>
   );
 }
 
@@ -788,3 +1005,14 @@ function AlertasDeViaje() {
     </div>
   );
 }
+
+/* ─────────────────────────────── Utilidades ───────────────────────────────── */
+
+function formatPeriod(period: { from: string; to: string }): string {
+  const from = new Date(period.from);
+  const to = new Date(period.to);
+  const formatter = new Intl.DateTimeFormat("es-SV", { day: "2-digit", month: "short" });
+  return `${formatter.format(from)} al ${formatter.format(to)}`;
+}
+
+const subtleStyle = { fontSize: 11, color: "var(--text-mute)", marginTop: 6 } as const;
