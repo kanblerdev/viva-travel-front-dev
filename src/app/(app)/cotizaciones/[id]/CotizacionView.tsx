@@ -921,6 +921,20 @@ function VersionDetail({
               {version.trip.passengers.children > 0 &&
                 ` y ${version.trip.passengers.children} menor(es)`}
             </span>
+            {/* Nombres y edades, si el asesor los cargó: lo mismo que lista el PDF. */}
+            {version.trip.passengers.travelers.length > 0 && (
+              <ul style={{ margin: "4px 0 0", paddingLeft: 18, fontSize: 13, lineHeight: 1.6 }}>
+                {version.trip.passengers.travelers.map((traveler, index) => (
+                  <li key={index}>
+                    {traveler.name ?? (traveler.kind === "child" ? "Menor" : "Adulto")}
+                    {traveler.kind === "child" && traveler.name ? " · menor" : ""}
+                    {traveler.age !== null
+                      ? ` · ${traveler.age} ${traveler.age === 1 ? "año" : "años"}`
+                      : ""}
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
           <div>
             <span className="k">Emitida</span>
@@ -973,12 +987,33 @@ function VersionDetail({
           Estos dos textos salían en el documento y no aparecían en ninguna
           pantalla del CRM: el asesor no podía revisar qué había mandado sin
           abrir el adjunto (hallazgo C3). */}
-      {(version.conditions || version.clientNotes || version.annexImageIds.length > 0) && (
+      {(version.validityNote ||
+        version.conditions ||
+        version.clientNotes ||
+        version.annexImageIds.length > 0) && (
         <div className="card">
           <div className="card-h">
             <span className="ttl">Texto para el cliente</span>
             <span className="chip blue">Sale en el PDF</span>
           </div>
+
+          {/* Lo que el cliente lee junto al precio en vez de una fecha (18 oct 2026). */}
+          {version.validityNote && (
+            <div style={{ marginBottom: version.conditions ? 14 : 0 }}>
+              <span className="k">Vigencia del precio</span>
+              <div
+                style={{
+                  fontSize: 13,
+                  lineHeight: 1.7,
+                  whiteSpace: "pre-wrap",
+                  marginTop: 4,
+                  fontStyle: "italic",
+                }}
+              >
+                {version.validityNote}
+              </div>
+            </div>
+          )}
 
           {version.conditions && (
             <div>
@@ -997,14 +1032,21 @@ function VersionDetail({
           )}
 
           {version.annexImageIds.length > 0 && (
-            <div style={{ marginTop: version.conditions ? 14 : 0 }}>
+            <div style={{ marginTop: version.conditions || version.validityNote ? 14 : 0 }}>
               <span className="k">Anexo</span>
               <AnnexGallery imageIds={version.annexImageIds} />
             </div>
           )}
 
           {version.clientNotes && (
-            <div style={{ marginTop: version.conditions || version.annexImageIds.length > 0 ? 14 : 0 }}>
+            <div
+              style={{
+                marginTop:
+                  version.conditions || version.validityNote || version.annexImageIds.length > 0
+                    ? 14
+                    : 0,
+              }}
+            >
               <span className="k">Nota para el cliente</span>
               <div
                 style={{

@@ -66,6 +66,52 @@ type AnnexDraft = {
   name: string;
 };
 
+/**
+ * Fila de viajero · 18 oct 2026.
+ *
+ * Hay UNA fila por cupo (adulto 1, adulto 2, menor 1…) aunque esté vacía: así
+ * el formulario conserva el orden mientras se escribe. Al guardar viajan solo
+ * las que tienen nombre o edad; el backend descarta el resto.
+ */
+type TravelerRow = { name: string; age: string };
+
+const emptyRow = (): TravelerRow => ({ name: "", age: "" });
+
+/** Tope de filas por tipo: espejo de los 60 viajeros que admite el DTO. */
+const TRAVELER_ROWS_MAX = 30;
+
+/** Ajusta las filas al cupo sin perder lo ya escrito. */
+function resizeRows(rows: TravelerRow[], count: number): TravelerRow[] {
+  const size = Math.max(0, Math.min(count, TRAVELER_ROWS_MAX));
+  if (rows.length === size) return rows;
+  return rows.length > size
+    ? rows.slice(0, size)
+    : [...rows, ...Array.from({ length: size - rows.length }, emptyRow)];
+}
+
+/** Filas del editor a partir de lo guardado, rellenando hasta el cupo. */
+function rowsFromTravelers(
+  travelers: { kind: "adult" | "child"; name: string | null; age: number | null }[],
+  kind: "adult" | "child",
+  count: number,
+): TravelerRow[] {
+  const rows = travelers
+    .filter((traveler) => traveler.kind === kind)
+    .map((traveler) => ({
+      name: traveler.name ?? "",
+      age: traveler.age === null ? "" : String(traveler.age),
+    }));
+  return resizeRows(rows, count);
+}
+
+/** Edad escrita → número, o `undefined` si está vacía. `null` si no es válida. */
+function parseAge(value: string): number | undefined | null {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const age = Number(trimmed);
+  return Number.isInteger(age) && age >= 0 && age <= 120 ? age : null;
+}
+
 /** Espejo de QUOTE_ANNEX_LIMITS del backend, que vuelve a validar al guardar. */
 const ANNEX_MAX_IMAGES = 6;
 const ANNEX_MIME_TYPES = ["image/jpeg", "image/png"];
@@ -87,6 +133,10 @@ type Draft = {
   endDate: string;
   adults: number;
   children: number;
+  /** Una fila por adulto; la primera es el titular del expediente. */
+  adultRows: TravelerRow[];
+  /** Una fila por menor. */
+  childRows: TravelerRow[];
   serviceLines: LineDraft[];
   proposalDescription: string;
   includes: string;
@@ -98,9 +148,16 @@ type Draft = {
   agencyValue: string;
   conditions: string;
   clientNotes: string;
+  /**
+   * Aviso de vigencia del precio · 18 oct 2026.
+   *
+   * Reemplaza al campo "Válida hasta": el cliente lee este texto ("sujeto a
+   * cambios…") y no una fecha. La vigencia sigue existiendo como dato interno
+   * —cada versión nace con 30 días— y la pone el backend.
+   */
+  validityNote: string;
   internalNotes: string;
   annexImages: AnnexDraft[];
-  validUntil: string;
 };
 
 const isoDate = (value: string) => value.slice(0, 10);
@@ -121,6 +178,8 @@ function emptyDraft(clientId: string): Draft {
     endDate: isoDate(end.toISOString()),
     adults: 2,
     children: 0,
+    adultRows: resizeRows([], 2),
+    childRows: [],
     serviceLines: [
       { serviceType: "flight", supplierId: "", description: "", startDate: "", endDate: "" },
     ],
@@ -134,9 +193,9 @@ function emptyDraft(clientId: string): Draft {
     agencyValue: "",
     conditions: "",
     clientNotes: "",
+    validityNote: "",
     internalNotes: "",
     annexImages: [],
-    validUntil: "",
   };
 }
 
@@ -153,6 +212,16 @@ function draftFromQuote(quote: QuoteDetail): Draft {
     endDate: isoDate(version?.trip.endDate ?? ""),
     adults: version?.trip.passengers.adults ?? 1,
     children: version?.trip.passengers.children ?? 0,
+    adultRows: rowsFromTravelers(
+      version?.trip.passengers.travelers ?? [],
+      "adult",
+      version?.trip.passengers.adults ?? 1,
+    ),
+    childRows: rowsFromTravelers(
+      version?.trip.passengers.travelers ?? [],
+      "child",
+      version?.trip.passengers.children ?? 0,
+    ),
     serviceLines:
       version?.serviceLines.map((line) => ({
         serviceType: line.serviceType,
@@ -171,6 +240,7 @@ function draftFromQuote(quote: QuoteDetail): Draft {
     agencyValue: version?.commissions.agency?.value ?? "",
     conditions: version?.conditions ?? "",
     clientNotes: version?.clientNotes ?? "",
+    validityNote: version?.validityNote ?? "",
     internalNotes: version?.internalNotes ?? "",
     // El nombre y la vista previa llegan después, por la URL firmada: acá solo
     // importa QUÉ imágenes tiene la versión y en qué orden.
@@ -180,7 +250,6 @@ function draftFromQuote(quote: QuoteDetail): Draft {
       file: null,
       name: "",
     })),
-    validUntil: isoDate(version?.validUntil ?? ""),
   };
 }
 
@@ -277,14 +346,20 @@ export function QuoteEditor({
     crmApi
       .quoteDefaults()
       .then((defaults) => {
-        if (!vigente || (!defaults.conditions && !defaults.clientNotes)) return;
+        if (
+          !vigente ||
+          (!defaults.conditions && !defaults.clientNotes && !defaults.validityNote)
+        ) {
+          return;
+        }
         const apply = (prev: Draft): Draft =>
-          prev.conditions || prev.clientNotes
+          prev.conditions || prev.clientNotes || prev.validityNote
             ? prev
             : {
                 ...prev,
                 conditions: defaults.conditions ?? "",
                 clientNotes: defaults.clientNotes ?? "",
+                validityNote: defaults.validityNote ?? "",
               };
         setDraft(apply);
         setBaseline(apply);
@@ -306,6 +381,8 @@ export function QuoteEditor({
   // editando: se pide de a uno para poder mostrar su nombre sin traer la cartera
   // entera, que era justamente lo que rompía el selector con más de 200 fichas.
   const clientId = draft.clientId;
+  /** Último nombre precargado como adulto 1, para reemplazarlo si cambia el expediente. */
+  const titularRef = useRef("");
   useEffect(() => {
     if (!clientId) {
       setClient(null);
@@ -315,13 +392,31 @@ export function QuoteEditor({
     crmApi
       .getClient(clientId)
       .then((found) => {
-        if (vigente) setClient(found);
+        if (!vigente) return;
+        setClient(found);
+        if (editing) return;
+
+        // El titular es el adulto 1: su nombre se precarga al crear, y entra
+        // también a la línea base para que no cuente como cambio. Si el asesor
+        // ya escribió otro nombre ahí, lo suyo manda.
+        const previous = titularRef.current;
+        titularRef.current = found.fullName;
+        const apply = (prev: Draft): Draft => {
+          const first = prev.adultRows[0];
+          if (!first || (first.name && first.name !== previous)) return prev;
+          return {
+            ...prev,
+            adultRows: [{ ...first, name: found.fullName }, ...prev.adultRows.slice(1)],
+          };
+        };
+        setDraft(apply);
+        setBaseline(apply);
       })
       .catch(() => undefined);
     return () => {
       vigente = false;
     };
-  }, [clientId]);
+  }, [clientId, editing]);
 
   // El expediente sin sucursal de origen la recibe acá: es el último momento
   // en que puede faltar, porque el dashboard tabula los ingresos por sucursal.
@@ -336,6 +431,34 @@ export function QuoteEditor({
 
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) =>
     setDraft((prev) => ({ ...prev, [key]: value }));
+
+  /* ── Viajeros · 18 oct 2026 ───────────────────────────────────────────────── */
+
+  // Los cupos mandan: cambiar "Adultos" o "Menores" agrega o quita filas, sin
+  // perder lo escrito en las que quedan.
+  function setAdults(count: number) {
+    setDraft((prev) => ({
+      ...prev,
+      adults: count,
+      adultRows: resizeRows(prev.adultRows, count),
+    }));
+  }
+
+  function setChildren(count: number) {
+    setDraft((prev) => ({
+      ...prev,
+      children: count,
+      childRows: resizeRows(prev.childRows, count),
+    }));
+  }
+
+  function updateTraveler(kind: "adult" | "child", index: number, patch: Partial<TravelerRow>) {
+    const key = kind === "adult" ? "adultRows" : "childRows";
+    setDraft((prev) => ({
+      ...prev,
+      [key]: prev[key].map((row, i) => (i === index ? { ...row, ...patch } : row)),
+    }));
+  }
 
   /**
    * Suma imágenes al anexo, vengan del selector, de un arrastre o de Ctrl+V.
@@ -580,22 +703,14 @@ export function QuoteEditor({
    * podía llenar el formulario entero con el regreso antes de la salida y
    * recibir el rechazo al final.
    */
-  const today = isoDate(new Date().toISOString());
   const problems: string[] = [];
   if (draft.startDate && draft.endDate && draft.endDate < draft.startDate) {
     problems.push("El regreso no puede ser anterior a la salida.");
   }
   if (draft.adults < 1) problems.push("Tiene que viajar al menos un adulto.");
-  if (draft.validUntil && draft.validUntil < today) {
-    problems.push("La vigencia ya pasó: la cotización nacería vencida.");
+  if ([...draft.adultRows, ...draft.childRows].some((row) => parseAge(row.age) === null)) {
+    problems.push("Revisá las edades de los viajeros: van de 0 a 120 años.");
   }
-  if (reopening && (!draft.validUntil || draft.validUntil <= today)) {
-    problems.push("Para reabrirla, poné una vigencia posterior a hoy.");
-  }
-
-  /** Aviso, no bloqueo: una vigencia larga puede ser deliberada. */
-  const validityAfterTrip =
-    draft.validUntil && draft.startDate && draft.validUntil > draft.startDate;
 
   function buildPayload(): QuoteInput {
     return {
@@ -609,7 +724,21 @@ export function QuoteEditor({
         destination: draft.destination.trim(),
         startDate: draft.startDate,
         endDate: draft.endDate,
-        passengers: { adults: draft.adults, children: draft.children },
+        passengers: {
+          adults: draft.adults,
+          children: draft.children,
+          // Solo las filas con algún dato; el backend vuelve a filtrar igual.
+          travelers: [
+            ...draft.adultRows.map((row) => ({ kind: "adult" as const, ...row })),
+            ...draft.childRows.map((row) => ({ kind: "child" as const, ...row })),
+          ]
+            .filter((row) => row.name.trim() || row.age.trim())
+            .map((row) => ({
+              kind: row.kind,
+              name: row.name.trim() || undefined,
+              age: parseAge(row.age) ?? undefined,
+            })),
+        },
       },
       serviceLines:
         draft.quoteType === "own_package"
@@ -642,8 +771,10 @@ export function QuoteEditor({
           : null,
       conditions: draft.conditions.trim() || undefined,
       clientNotes: draft.clientNotes.trim() || undefined,
+      validityNote: draft.validityNote.trim() || undefined,
       internalNotes: draft.internalNotes.trim() || undefined,
-      validUntil: draft.validUntil || undefined,
+      // Sin `validUntil` a propósito: la vigencia es interna y la pone el
+      // backend, 30 días por versión.
     };
   }
 
@@ -665,11 +796,11 @@ export function QuoteEditor({
       agencyCommission: payload.agencyCommission ?? null,
       conditions: draft.conditions.trim() || null,
       clientNotes: draft.clientNotes.trim() || null,
+      validityNote: draft.validityNote.trim() || null,
       internalNotes: draft.internalNotes.trim() || null,
       // Siempre viaja: el arreglo vacío es lo que QUITA el anexo en el backend,
       // igual que `null` borra los textos.
       annexImageIds: payload.annexImageIds ?? [],
-      validUntil: payload.validUntil,
     };
   }
 
@@ -737,8 +868,8 @@ export function QuoteEditor({
             <Icon name="calendar" />
             <div>
               Estás <b>reabriendo una cotización vencida</b>. Al guardar se emite la
-              versión {quote ? quote.versionCount + 1 : 2} con la vigencia nueva y vuelve a
-              borrador, lista para enviar. El historial se conserva completo.
+              versión {quote ? quote.versionCount + 1 : 2} con 30 días nuevos de vigencia y
+              vuelve a borrador, lista para enviar. El historial se conserva completo.
             </div>
           </div>
         )}
@@ -885,7 +1016,10 @@ export function QuoteEditor({
             </div>
           )}
 
-          <div className="modal-grid" style={{ marginTop: 14 }}>
+          {/* "Válida hasta" vivía acá hasta el 18 oct 2026. La vigencia sigue
+              existiendo como dato interno (30 días por versión, la pone el
+              backend); el cliente lee el aviso de "Vigencia del precio". */}
+          <div style={{ marginTop: 14 }}>
             <div>
               <label className="label" htmlFor="destination">
                 Destino *
@@ -908,30 +1042,6 @@ export function QuoteEditor({
                   <option key={name} value={name} />
                 ))}
               </datalist>
-            </div>
-            <div>
-              <label className="label" htmlFor="validUntil">
-                Válida hasta
-              </label>
-              <input
-                id="validUntil"
-                type="date"
-                className="input"
-                value={draft.validUntil}
-                onChange={(e) => set("validUntil", e.target.value)}
-                disabled={submitting}
-              />
-              {!draft.validUntil ? (
-                <div style={hint}>
-                  <Icon name="calendar" width={12} height={12} />
-                  Vacío = 30 días desde hoy.
-                </div>
-              ) : validityAfterTrip ? (
-                <div style={{ ...hint, color: "var(--amber-deep, var(--text-mute))" }}>
-                  <Icon name="target" width={12} height={12} />
-                  La vigencia cae después de la salida del viaje.
-                </div>
-              ) : null}
             </div>
           </div>
 
@@ -981,7 +1091,7 @@ export function QuoteEditor({
                 min={1}
                 className="input"
                 value={draft.adults === 0 ? "" : draft.adults}
-                onChange={(e) => set("adults", e.target.value === "" ? 0 : Number(e.target.value))}
+                onChange={(e) => setAdults(e.target.value === "" ? 0 : Number(e.target.value))}
                 disabled={submitting}
               />
             </div>
@@ -995,13 +1105,46 @@ export function QuoteEditor({
                 min={0}
                 className="input"
                 value={draft.children}
-                onChange={(e) =>
-                  set("children", e.target.value === "" ? 0 : Number(e.target.value))
-                }
+                onChange={(e) => setChildren(e.target.value === "" ? 0 : Number(e.target.value))}
                 disabled={submitting}
               />
             </div>
           </div>
+
+          {/* Viajeros · 18 oct 2026: una fila por cupo, con nombre y edad
+              opcionales. El titular del expediente es el adulto 1. */}
+          {(draft.adultRows.length > 0 || draft.childRows.length > 0) && (
+            <div style={{ marginTop: 14 }}>
+              <div className="label">
+                Viajeros{" "}
+                <span style={{ fontWeight: 500, color: "var(--text-mute)" }}>· opcional</span>
+              </div>
+              <div style={{ display: "grid", gap: 8 }}>
+                {draft.adultRows.map((row, index) => (
+                  <TravelerRowFields
+                    key={`adult-${index}`}
+                    label={index === 0 ? "Titular" : `Adulto ${index + 1}`}
+                    row={row}
+                    disabled={submitting}
+                    onChange={(patch) => updateTraveler("adult", index, patch)}
+                  />
+                ))}
+                {draft.childRows.map((row, index) => (
+                  <TravelerRowFields
+                    key={`child-${index}`}
+                    label={`Menor ${index + 1}`}
+                    row={row}
+                    disabled={submitting}
+                    onChange={(patch) => updateTraveler("child", index, patch)}
+                  />
+                ))}
+              </div>
+              <div style={hint}>
+                <Icon name="users" width={12} height={12} />
+                Nombre y edad son opcionales; lo que completes sale en el PDF.
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Contenido según el tipo · HU-COT-03 y HU-COT-04 */}
@@ -1241,13 +1384,32 @@ export function QuoteEditor({
             <span className="chip blue">Sale en el PDF</span>
           </div>
 
-          <label className="label" htmlFor="conditions">
+          {/* Reemplaza a la fecha "Válida hasta" (18 oct 2026): sale junto al
+              precio en el PDF y en el correo. */}
+          <label className="label" htmlFor="validityNote">
+            Vigencia del precio
+          </label>
+          <textarea
+            id="validityNote"
+            className="input"
+            rows={2}
+            maxLength={500}
+            style={{ resize: "vertical", lineHeight: 1.6 }}
+            value={draft.validityNote}
+            onChange={(e) => set("validityNote", e.target.value)}
+            placeholder="Los precios de esta cotización están sujetos a cambios y disponibilidad hasta confirmar la reserva."
+            disabled={submitting}
+          />
+
+          {/* Cajas con aire: con dos filas el texto predeterminado salía
+              cortado y había que desplazarse para leerlo entero. */}
+          <label className="label" htmlFor="conditions" style={{ marginTop: 14 }}>
             Condiciones
           </label>
           <textarea
             id="conditions"
             className="input"
-            rows={2}
+            rows={5}
             style={{ resize: "vertical", lineHeight: 1.6 }}
             value={draft.conditions}
             onChange={(e) => set("conditions", e.target.value)}
@@ -1261,7 +1423,7 @@ export function QuoteEditor({
           <textarea
             id="clientNotes"
             className="input"
-            rows={2}
+            rows={4}
             style={{ resize: "vertical", lineHeight: 1.6 }}
             value={draft.clientNotes}
             onChange={(e) => set("clientNotes", e.target.value)}
@@ -1653,6 +1815,20 @@ function ClientPreview({
       ? `${draft.adults} adulto(s) y ${draft.children} menor(es)`
       : `${draft.adults} adulto(s)`;
 
+  // Igual que el PDF: solo las filas con datos, con el menor señalado.
+  const travelerLines = [
+    ...draft.adultRows.map((row) => ({ kind: "adult" as const, ...row })),
+    ...draft.childRows.map((row) => ({ kind: "child" as const, ...row })),
+  ]
+    .filter((row) => row.name.trim() || row.age.trim())
+    .map((row) => {
+      const parts = [row.name.trim() || (row.kind === "child" ? "Menor" : "Adulto")];
+      if (row.kind === "child" && row.name.trim()) parts.push("menor");
+      const age = parseAge(row.age);
+      if (age !== null && age !== undefined) parts.push(`${age} ${age === 1 ? "año" : "años"}`);
+      return parts.join(" · ");
+    });
+
   return (
     <div className={`qpreview${collapsed ? " is-collapsed" : ""}`}>
       <div className="card" style={{ padding: 0, overflow: "hidden", position: "sticky", top: 14 }}>
@@ -1696,6 +1872,13 @@ function ClientPreview({
           <div style={{ fontSize: 12, color: "var(--text-mute)" }}>
             {previewDate(draft.startDate)} al {previewDate(draft.endDate)}
           </div>
+          {travelerLines.length > 0 && (
+            <ul style={{ margin: "6px 0 0", paddingLeft: 18, fontSize: 12, lineHeight: 1.6 }}>
+              {travelerLines.map((line, index) => (
+                <li key={index}>{line}</li>
+              ))}
+            </ul>
+          )}
 
           <div style={{ marginTop: 18, display: "flex", flexDirection: "column", gap: 8 }}>
             {draft.quoteType === "own_package"
@@ -1756,11 +1939,21 @@ function ClientPreview({
             </span>
           </div>
 
-          {/* La vigencia y la nota al cliente salen en el PDF y faltaban acá: la
-              vista previa prometía fidelidad y no la cumplía (hallazgo E4). */}
-          {draft.validUntil && (
-            <div style={{ marginTop: 8, fontSize: 11, color: "var(--text-mute)", textAlign: "right" }}>
-              Válida hasta {previewDate(draft.validUntil)}
+          {/* El aviso de vigencia y la nota al cliente salen en el PDF y tienen
+              que verse acá: la vista previa promete fidelidad (hallazgo E4). */}
+          {draft.validityNote.trim() && (
+            <div
+              style={{
+                marginTop: 8,
+                fontSize: 11,
+                color: "var(--text-mute)",
+                textAlign: "right",
+                fontStyle: "italic",
+                lineHeight: 1.5,
+                whiteSpace: "pre-wrap",
+              }}
+            >
+              {draft.validityNote.trim()}
             </div>
           )}
 
@@ -1841,6 +2034,56 @@ function ClientPreview({
           Las comisiones y las notas internas no aparecen acá ni en el PDF.
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Una fila de viajero: etiqueta fija, nombre y edad opcionales. */
+function TravelerRowFields({
+  label,
+  row,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  row: TravelerRow;
+  disabled: boolean;
+  onChange: (patch: Partial<TravelerRow>) => void;
+}) {
+  const invalidAge = parseAge(row.age) === null;
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "minmax(64px, 84px) minmax(0, 1fr) 84px",
+        gap: 8,
+        alignItems: "center",
+      }}
+    >
+      <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-mute)" }}>{label}</span>
+      <input
+        className="input"
+        aria-label={`Nombre · ${label}`}
+        value={row.name}
+        onChange={(e) => onChange({ name: e.target.value })}
+        placeholder="Nombre"
+        maxLength={120}
+        disabled={disabled}
+      />
+      <input
+        className="input"
+        type="number"
+        inputMode="numeric"
+        min={0}
+        max={120}
+        aria-label={`Edad · ${label}`}
+        aria-invalid={invalidAge || undefined}
+        value={row.age}
+        onChange={(e) => onChange({ age: e.target.value })}
+        placeholder="Edad"
+        disabled={disabled}
+        style={invalidAge ? { borderColor: "var(--red, #d33)" } : undefined}
+      />
     </div>
   );
 }

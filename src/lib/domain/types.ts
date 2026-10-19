@@ -144,11 +144,21 @@ export interface ClientSnapshot {
   phone?: string | null;
 }
 
+/**
+ * Viajero con nombre o edad, opcionales (18 oct 2026). El titular del
+ * expediente es el adulto 1; solo se guardan las filas con algún dato.
+ */
+export interface Traveler {
+  kind: "adult" | "child";
+  name?: string | null;
+  age?: number | null;
+}
+
 export interface TripInfo {
   destination: string;
   startDate: IsoDate;
   endDate: IsoDate;
-  passengers: { adults: number; children: number };
+  passengers: { adults: number; children: number; travelers?: Traveler[] };
 }
 
 /** Línea de servicio de un paquete propio. */
@@ -207,9 +217,12 @@ export interface QuoteVersion {
   conditions?: string | null;
   /** Notas visibles al cliente. */
   clientNotes?: string | null;
+  /** Aviso de vigencia del precio: lo que el cliente lee en vez de una fecha. */
+  validityNote?: string | null;
   /** Notas internas de la versión. No se exportan. */
   internalNotes?: string | null;
   issuedAt: IsoDate;
+  /** Vigencia interna (vencimiento, KPI). El cliente no la ve desde el 18 oct 2026. */
   validUntil: IsoDate;
   pdfFileId?: Id | null;
   createdAt: IsoDate;

@@ -488,6 +488,25 @@ export type QuoteCommission = {
   amount: string;
 };
 
+/**
+ * Viajero con nombre o edad · 18 oct 2026.
+ *
+ * Información complementaria y opcional de los cupos de adultos y menores. El
+ * titular del expediente es el adulto 1; el resto son acompañantes. El backend
+ * guarda solo las filas que traen algún dato.
+ */
+export type QuoteTraveler = {
+  kind: "adult" | "child";
+  name: string | null;
+  age: number | null;
+};
+
+export type QuoteTravelerInput = {
+  kind: "adult" | "child";
+  name?: string;
+  age?: number;
+};
+
 export type QuoteVersionData = {
   id: string;
   versionNumber: number;
@@ -496,7 +515,7 @@ export type QuoteVersionData = {
     destination: string;
     startDate: string;
     endDate: string;
-    passengers: { adults: number; children: number };
+    passengers: { adults: number; children: number; travelers: QuoteTraveler[] };
   };
   serviceLines: QuoteServiceLine[];
   supplierProposal: {
@@ -513,10 +532,13 @@ export type QuoteVersionData = {
   };
   conditions: string | null;
   clientNotes: string | null;
+  /** Aviso de vigencia del precio: lo que el cliente lee en vez de una fecha. */
+  validityNote: string | null;
   internalNotes: string | null;
   /** Anexo del PDF, en su orden. Vacío en las versiones anteriores al campo. */
   annexImageIds: string[];
   issuedAt: string;
+  /** Vigencia INTERNA (vencimiento, KPI): el cliente no la ve desde el 18 oct 2026. */
   validUntil: string;
   pdfFileId: string | null;
   createdBy: QuoteRef;
@@ -588,7 +610,7 @@ export type QuoteInput = {
     destination: string;
     startDate: string;
     endDate: string;
-    passengers: { adults: number; children?: number };
+    passengers: { adults: number; children?: number; travelers?: QuoteTravelerInput[] };
   };
   serviceLines?: {
     serviceType: ServiceType;
@@ -601,12 +623,18 @@ export type QuoteInput = {
   agencyCommission?: { mode: CommissionMode; value: string } | null;
   conditions?: string;
   clientNotes?: string;
+  /** Aviso de vigencia del precio, visible para el cliente. */
+  validityNote?: string;
   internalNotes?: string;
   /**
    * Anexo del PDF: ids de imágenes del expediente, en el orden en que se
    * incrustan. En el PATCH, omitirlo conserva el anexo y `[]` lo quita.
    */
   annexImageIds?: string[];
+  /**
+   * Vigencia interna. El editor ya no la manda (18 oct 2026): cada versión
+   * nace con 30 días. Queda por si una integración la necesita.
+   */
   validUntil?: string;
 };
 
@@ -617,10 +645,14 @@ export type QuoteInput = {
  * distingue de omitirlos: omitir conserva, `null` borra.
  */
 export type QuoteUpdateInput = Partial<
-  Omit<QuoteInput, "clientId" | "quoteType" | "conditions" | "clientNotes" | "internalNotes">
+  Omit<
+    QuoteInput,
+    "clientId" | "quoteType" | "conditions" | "clientNotes" | "validityNote" | "internalNotes"
+  >
 > & {
   conditions?: string | null;
   clientNotes?: string | null;
+  validityNote?: string | null;
   internalNotes?: string | null;
 };
 
@@ -1064,7 +1096,11 @@ export const crmApi = {
 
   /** Textos con los que nace una cotización. Editables en cada una. */
   quoteDefaults: () =>
-    authed<{ conditions: string | null; clientNotes: string | null }>("/quote-defaults"),
+    authed<{
+      conditions: string | null;
+      clientNotes: string | null;
+      validityNote: string | null;
+    }>("/quote-defaults"),
 
   /** Sucursales activas: origen del prospecto, obligatorio en el alta manual. */
   branches: () =>
