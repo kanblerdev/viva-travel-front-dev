@@ -100,8 +100,10 @@ export async function apiUpload<T>(
   file: File,
   token: string,
   timeoutMs = 60_000,
+  fields: Record<string, string> = {},
 ): Promise<T> {
   const form = new FormData();
+  for (const [name, value] of Object.entries(fields)) form.append(name, value);
   form.append("file", file);
 
   const controller = new AbortController();

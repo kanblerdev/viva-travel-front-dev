@@ -541,13 +541,28 @@ table.t .th-sort.is-active svg { opacity: 1; color: var(--orange); }
   display: flex; flex-direction: column;
   min-height: 0; min-width: 0;
 }
-.inbox-tabs { display: flex; gap: 6px; padding: 12px; border-bottom: 1px solid var(--border-soft); }
-.inbox-tabs button {
-  border: 0; background: var(--bg-app); color: var(--text-mute);
-  font-family: inherit; font-size: 12px; font-weight: 600;
-  padding: 6px 11px; border-radius: 999px; cursor: pointer;
+.inbox-tabs {
+  display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 3px;
+  margin: 12px 12px 0; padding: 3px; border-radius: 9px; background: var(--bg-app);
 }
-.inbox-tabs button[aria-pressed="true"] { background: var(--navy); color: #fff; }
+.inbox-tabs button {
+  border: 0; background: transparent; color: var(--text-mute);
+  font-family: inherit; font-size: 12px; font-weight: 600; white-space: nowrap;
+  padding: 7px 6px; border-radius: 7px; cursor: pointer;
+}
+.inbox-tabs button:hover { color: var(--text); }
+.inbox-tabs button[aria-selected="true"] { background: var(--navy); color: #fff; }
+.inbox-deleted-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 12px 12px 0; font-size: 13px; font-weight: 700; color: var(--text);
+}
+.inbox-list-foot { padding: 8px 12px; border-top: 1px solid var(--border-soft); text-align: center; }
+.inbox-link {
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  border: 0; background: transparent; padding: 2px 4px; cursor: pointer;
+  font-family: inherit; font-size: 12px; font-weight: 600; color: var(--text-mute);
+}
+.inbox-link:hover { color: var(--orange-deep); }
 .inbox-list { overflow-y: auto; flex: 1; min-height: 0; }
 .inbox-item {
   display: flex; gap: 10px; align-items: flex-start;
@@ -671,6 +686,11 @@ table.t .th-sort.is-active svg { opacity: 1; color: var(--orange); }
 }
 .composer-template-vars { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 /* Lo que va a leer el cliente, ya con los valores puestos. */
+.composer-attachment-file { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.composer-attachment-file img { width: 56px; height: 56px; flex: none; object-fit: cover; border-radius: 8px; }
+.composer-attachment-file > svg { width: 20px; height: 20px; flex: none; }
+.composer-attachment-file div { min-width: 0; }
+.composer-attachment-file b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer-template-preview {
   padding: 9px 11px; border-radius: 8px;
   background: var(--white); border: 1px solid var(--border-soft);
@@ -737,10 +757,17 @@ table.t .th-sort.is-active svg { opacity: 1; color: var(--orange); }
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
 .inbox-filters {
-  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px;
+  display: flex; flex-direction: column; gap: 8px;
   padding: 10px 12px; border-bottom: 1px solid var(--border-soft);
 }
-.inbox-filters .input { padding: 7px 10px; font-size: 12px; }
+.inbox-filters .input { width: 100%; padding: 7px 10px; font-size: 12px; }
+.inbox-search { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
+.inbox-filter-toggle { position: relative; }
+.inbox-filter-toggle.is-active { color: var(--orange-deep); border-color: var(--orange); }
+.inbox-filter-dot {
+  width: 6px; height: 6px; border-radius: 50%; background: var(--orange); flex: none;
+}
+.inbox-filter-panel { display: flex; flex-direction: column; gap: 6px; }
 .inbox-empty {
   display: flex; flex-direction: column; align-items: center; gap: 10px;
   padding: 32px 18px; text-align: center; font-size: 13px; line-height: 1.5;
