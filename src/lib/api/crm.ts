@@ -986,6 +986,11 @@ export type InboxMessage = {
   sentOutsideCrm: boolean;
   sentBy: ConversationPerson | null;
   occurredAt: string;
+  /**
+   * Con valor, el hilo dibuja "Mensaje eliminado". A un Asesor le llega sin texto,
+   * sin adjunto y sin `by`; Gerente y Administrador reciben el original.
+   */
+  deleted: { at: string; by: ConversationPerson | null } | null;
 };
 
 /**
@@ -1481,6 +1486,13 @@ export const crmApi = {
 
   restoreConversation: (id: string) =>
     authed<ConversationSummary>(`/conversations/${id}/restaurar`, { method: "POST" }),
+
+  /** Solo Gerente y Administrador. No lo retira del teléfono del cliente. */
+  deleteConversationMessage: (id: string, messageId: string) =>
+    authed<InboxMessage>(`/conversations/${id}/messages/${messageId}`, { method: "DELETE" }),
+
+  restoreConversationMessage: (id: string, messageId: string) =>
+    authed<InboxMessage>(`/conversations/${id}/messages/${messageId}/restaurar`, { method: "POST" }),
 
   /** Solo apaga el contador si quien llama la atiende. */
   markConversationRead: (id: string) =>

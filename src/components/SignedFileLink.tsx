@@ -5,6 +5,21 @@ import { Icon } from "@/components/Icon";
 import { ApiError } from "@/lib/api/client";
 import { crmApi } from "@/lib/api/crm";
 
+/** Descarga por el API y guarda el archivo con su nombre real. */
+export async function saveStoredFile(fileId: string, fileName: string): Promise<void> {
+  const blob = await crmApi.downloadFile(fileId);
+  // El blob va a un enlace temporal del MISMO origen, que es la única forma
+  // de que `download` se respete y el archivo se guarde con su nombre.
+  const href = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = href;
+  anchor.download = fileName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(href);
+}
+
 /**
  * Abrir y descargar un archivo del expediente · HU-ARC-02.
  *
@@ -52,17 +67,7 @@ export function SignedFileLink({
     setBusy("download");
     setError(null);
     try {
-      const blob = await crmApi.downloadFile(fileId);
-      // El blob va a un enlace temporal del MISMO origen, que es la única forma
-      // de que `download` se respete y el archivo se guarde con su nombre.
-      const href = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = href;
-      anchor.download = fileName;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      URL.revokeObjectURL(href);
+      await saveStoredFile(fileId, fileName);
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : "No se pudo descargar.");
     } finally {

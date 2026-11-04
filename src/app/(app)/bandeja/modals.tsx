@@ -7,6 +7,7 @@ import { ApiError } from "@/lib/api/client";
 import {
   crmApi,
   type ConversationSummary,
+  type InboxMessage,
   type TeamMember,
 } from "@/lib/api/crm";
 import { USER_ROLE_LABEL } from "@/lib/domain/enums";
@@ -297,6 +298,79 @@ export function DeleteConversationModal({
           disabled={submitting}
         >
           {submitting ? "Eliminando…" : "Eliminar chat"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/** Eliminar un mensaje. El aviso importa: quien elimina puede creer que se lo quita al cliente. */
+export function DeleteMessageModal({
+  conversationId,
+  message,
+  onClose,
+  onDone,
+}: {
+  conversationId: string;
+  message: InboxMessage;
+  onClose: () => void;
+  onDone: (message: InboxMessage) => void;
+}) {
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleDelete() {
+    setSubmitting(true);
+    setError(null);
+    try {
+      onDone(await crmApi.deleteConversationMessage(conversationId, message.id));
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "No se pudo eliminar el mensaje.");
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={
+        <>
+          <Icon name="trash" style={{ color: "var(--red)" }} />
+          Eliminar mensaje
+        </>
+      }
+      onClose={onClose}
+    >
+      <p className="modal-lead">
+        En el hilo queda la marca “Mensaje eliminado”. Solo Gerentes y Administradores pueden ver
+        el original y restaurarlo.
+      </p>
+
+      {error && (
+        <div className="auth-alert error" style={{ marginBottom: 14 }} role="alert">
+          <Icon name="target" />
+          <div>{error}</div>
+        </div>
+      )}
+
+      <div className="auth-alert info" style={{ marginBottom: 14 }}>
+        <Icon name="globe" />
+        <div>
+          No se borra del teléfono del cliente.
+          {message.media?.fileId && " El archivo adjunto sigue en el expediente."}
+        </div>
+      </div>
+
+      <div className="modal-foot">
+        <button type="button" className="btn ghost" onClick={onClose} disabled={submitting}>
+          Cancelar
+        </button>
+        <button
+          type="button"
+          className="btn danger"
+          onClick={() => void handleDelete()}
+          disabled={submitting}
+        >
+          {submitting ? "Eliminando…" : "Eliminar mensaje"}
         </button>
       </div>
     </Modal>

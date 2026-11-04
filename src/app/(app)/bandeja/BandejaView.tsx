@@ -1,9 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Icon } from "@/components/Icon";
+import { Modal } from "@/components/Modal";
+import { saveStoredFile } from "@/components/SignedFileLink";
 import { RelativeTime } from "@/components/RelativeTime";
 import { TabPanel, Tabs } from "@/components/Tabs";
 import { useSession, type SessionUser } from "@/lib/auth/AuthProvider";
@@ -36,6 +39,7 @@ import { usePolling } from "@/lib/hooks/usePolling";
 import {
   AssignConversationModal,
   DeleteConversationModal,
+  DeleteMessageModal,
   TransferConversationModal,
 } from "./modals";
 
@@ -587,6 +591,7 @@ function ConversationPanes({
   const [transferring, setTransferring] = useState(false);
   const [assigning, setAssigning] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [deletingMessage, setDeletingMessage] = useState<InboxMessage | null>(null);
   // Una vez que la persona pidió mensajes anteriores, "hay más" lo decide esa
   // paginación y no el refresco de la página más reciente.
   const loadedOlder = useRef(false);
@@ -662,6 +667,27 @@ function ConversationPanes({
       await refresh();
     } finally {
       setBusy(false);
+    }
+  }
+
+  /** Pinta el mensaje y actualiza el extracto de la lista, que pudo haber cambiado. */
+  function applyMessageChange(message: InboxMessage) {
+    setMessages((current) => mergeMessages(current, [message]));
+    void crmApi
+      .getConversation(conversationId)
+      .then((next) => {
+        setDetail(next);
+        onChanged(next);
+      })
+      .catch(() => undefined);
+  }
+
+  async function restoreMessage(message: InboxMessage) {
+    setActionError(null);
+    try {
+      applyMessageChange(await crmApi.restoreConversationMessage(conversationId, message.id));
+    } catch (caught) {
+      setActionError(caught instanceof ApiError ? caught.message : "No se pudo restaurar el mensaje.");
     }
   }
 
@@ -813,7 +839,13 @@ function ConversationPanes({
                 {entry.label}
               </span>
             ) : (
-              <MessageBubble key={entry.message.id} message={entry.message} />
+              <MessageBubble
+                key={entry.message.id}
+                message={entry.message}
+                canModerate={isManager && !deleted}
+                onDelete={setDeletingMessage}
+                onRestore={restoreMessage}
+              />
             ),
           )}
         </div>
@@ -847,6 +879,18 @@ function ConversationPanes({
           conversation={detail}
           onClose={() => setDeleting(false)}
           onDone={() => onDeleted(detail.id)}
+        />
+      )}
+
+      {deletingMessage && (
+        <DeleteMessageModal
+          conversationId={detail.id}
+          message={deletingMessage}
+          onClose={() => setDeletingMessage(null)}
+          onDone={(message) => {
+            setDeletingMessage(null);
+            applyMessageChange(message);
+          }}
         />
       )}
 
@@ -954,9 +998,23 @@ function failureText(reason: string): string {
   return reason;
 }
 
-function MessageBubble({ message }: { message: InboxMessage }) {
+function MessageBubble({
+  message,
+  canModerate,
+  onDelete,
+  onRestore,
+}: {
+  message: InboxMessage;
+  canModerate: boolean;
+  onDelete: (message: InboxMessage) => void;
+  onRestore: (message: InboxMessage) => void;
+}) {
   if (message.messageType === "system") {
     return <span className="thread-system">{message.text}</span>;
+  }
+
+  if (message.deleted) {
+    return <DeletedBubble message={message} canRestore={canModerate} onRestore={onRestore} />;
   }
 
   const time = new Date(message.occurredAt).toLocaleTimeString("es-SV", {
@@ -977,28 +1035,7 @@ function MessageBubble({ message }: { message: InboxMessage }) {
     <div
       className={`bubble ${message.direction === "inbound" ? "in" : "out"}${failed ? " failed" : ""}`}
     >
-      {message.media && (
-        <div className="bubble-media">
-          <Icon name={message.media.kind === "document" ? "paperclip" : "image"} />
-          <span>
-            {MEDIA_LABEL[message.media.kind]}
-            {message.media.filename ? `: ${message.media.filename}` : ""}
-          </span>
-          {message.media.fileId ? (
-            <AttachmentLink fileId={message.media.fileId} />
-          ) : message.media.temporaryUrl ? (
-            // Respaldo: el enlace que Meta manda en el evento, que caduca en
-            // minutos. Solo queda cuando la descarga no pudo hacerse.
-            <a href={message.media.temporaryUrl} target="_blank" rel="noreferrer">
-              Abrir
-            </a>
-          ) : (
-            // DM-10 deja fuera audio, video y stickers en la primera versión.
-            <span className="bubble-media-note">sin vista previa</span>
-          )}
-        </div>
-      )}
-      {message.text && <span style={{ whiteSpace: "pre-wrap" }}>{message.text}</span>}
+      <MessageContent message={message} />
       <time className="meta" dateTime={message.occurredAt} title={absolute(message.occurredAt)}>
         {time}
         {message.direction === "outbound" && (DELIVERY_MARK[message.deliveryStatus] ?? "")}
@@ -1011,9 +1048,7 @@ function MessageBubble({ message }: { message: InboxMessage }) {
   // La nota del fallo va FUERA de la burbuja: dentro, su largo decidía el ancho
   // del mensaje y un error de dos líneas hacía la burbuja más grande que
   // cualquier respuesta enviada con éxito.
-  if (!failed) return bubble;
-
-  return (
+  const body = failed ? (
     <div className="bubble-failed-wrap">
       {bubble}
       <span className="bubble-failed" title={message.failureReason ?? undefined}>
@@ -1021,6 +1056,300 @@ function MessageBubble({ message }: { message: InboxMessage }) {
         <span>{failureNote(message.failureReason)}</span>
       </span>
     </div>
+  ) : (
+    bubble
+  );
+
+  if (!canModerate) return body;
+
+  return (
+    <div className={`bubble-row ${message.direction === "inbound" ? "in" : "out"}`}>
+      {body}
+      <button
+        type="button"
+        className="bubble-action"
+        aria-label="Eliminar este mensaje"
+        title="Eliminar este mensaje"
+        onClick={() => onDelete(message)}
+      >
+        <Icon name="trash" />
+      </button>
+    </div>
+  );
+}
+
+/** Adjunto y texto del mensaje: lo comparten la burbuja y el original de uno eliminado. */
+function MessageContent({ message }: { message: InboxMessage }) {
+  const media = message.media;
+  const [imageFailed, setImageFailed] = useState(false);
+  // Estable: `BubbleImage` lo usa en un efecto, y el hilo se redibuja con cada refresco.
+  const markImageFailed = useCallback(() => setImageFailed(true), []);
+  const showImage = Boolean(
+    media &&
+      !imageFailed &&
+      (media.fileId || media.temporaryUrl) &&
+      (media.kind === "image" || media.mimeType?.startsWith("image/")),
+  );
+
+  return (
+    <>
+      {media && showImage && (
+        <BubbleImage
+          fileId={media.fileId}
+          temporaryUrl={media.temporaryUrl}
+          filename={media.filename}
+          onUnavailable={markImageFailed}
+        />
+      )}
+      {media && !showImage && (
+        <div className="bubble-media">
+          <Icon name={media.kind === "document" ? "paperclip" : "image"} />
+          <span>
+            {MEDIA_LABEL[media.kind]}
+            {media.filename ? `: ${media.filename}` : ""}
+          </span>
+          {media.fileId ? (
+            <AttachmentLink fileId={media.fileId} />
+          ) : media.temporaryUrl ? (
+            // Respaldo: el enlace que Meta manda en el evento, que caduca en
+            // minutos. Solo queda cuando la descarga no pudo hacerse.
+            <a href={media.temporaryUrl} target="_blank" rel="noreferrer">
+              Abrir
+            </a>
+          ) : (
+            // DM-10 deja fuera audio, video y stickers en la primera versión.
+            <span className="bubble-media-note">sin vista previa</span>
+          )}
+        </div>
+      )}
+      {message.text && <span style={{ whiteSpace: "pre-wrap" }}>{message.text}</span>}
+    </>
+  );
+}
+
+/**
+ * La marca que queda en el hilo. Al Asesor el API no le manda el contenido, así que
+ * "Ver original" solo aparece si hay algo que mostrar.
+ */
+function DeletedBubble({
+  message,
+  canRestore,
+  onRestore,
+}: {
+  message: InboxMessage;
+  canRestore: boolean;
+  onRestore: (message: InboxMessage) => void;
+}) {
+  const [showOriginal, setShowOriginal] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const hasOriginal = Boolean(message.text || message.media);
+  const time = new Date(message.occurredAt).toLocaleTimeString("es-SV", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  async function restore() {
+    setRestoring(true);
+    await onRestore(message);
+    setRestoring(false);
+  }
+
+  return (
+    <div className={`bubble deleted ${message.direction === "inbound" ? "in" : "out"}`}>
+      <span className="bubble-deleted-label">
+        <Icon name="trash" width={12} height={12} />
+        Mensaje eliminado
+      </span>
+      {showOriginal && (
+        <div className="bubble-deleted-original">
+          <MessageContent message={message} />
+        </div>
+      )}
+      <time className="meta" dateTime={message.occurredAt} title={absolute(message.occurredAt)}>
+        {time}
+        {message.deleted?.by && ` · eliminado por ${message.deleted.by.fullName}`}
+      </time>
+      {(hasOriginal || canRestore) && (
+        <div className="bubble-deleted-actions">
+          {hasOriginal && (
+            <button
+              type="button"
+              className="bubble-media-open"
+              aria-expanded={showOriginal}
+              onClick={() => setShowOriginal((open) => !open)}
+            >
+              {showOriginal ? "Ocultar original" : "Ver original"}
+            </button>
+          )}
+          {canRestore && (
+            <button
+              type="button"
+              className="bubble-media-open"
+              disabled={restoring}
+              onClick={() => void restore()}
+            >
+              {restoring ? "Restaurando…" : "Restaurar"}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Foto dentro de la burbuja; al tocarla se ve en grande.
+ *
+ * La URL firmada se pide cuando la burbuja está por entrar en pantalla: un hilo con
+ * muchas fotos no pide decenas de enlaces que quizá nadie llegue a ver. Caduca a los
+ * 15 minutos, así que si el navegador la rechaza se pide otra una vez; si vuelve a
+ * fallar, o era el enlace temporal de Meta, la burbuja vuelve a la fila con el nombre.
+ */
+function BubbleImage({
+  fileId,
+  temporaryUrl,
+  filename,
+  onUnavailable,
+}: {
+  fileId: string | null;
+  temporaryUrl: string | null;
+  filename: string | null;
+  onUnavailable: () => void;
+}) {
+  const frame = useRef<HTMLButtonElement>(null);
+  const retried = useRef(false);
+  const [near, setNear] = useState(false);
+  const [src, setSrc] = useState<string | null>(fileId ? null : temporaryUrl);
+  const [loaded, setLoaded] = useState(false);
+  const [viewing, setViewing] = useState(false);
+  const alt = filename ? `Imagen: ${filename}` : "Imagen del mensaje";
+
+  useEffect(() => {
+    const element = frame.current;
+    if (!element) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry?.isIntersecting) {
+          setNear(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "300px" },
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  const requestUrl = useCallback(async () => {
+    if (!fileId) return;
+    try {
+      setSrc((await crmApi.fileUrl(fileId)).url);
+    } catch {
+      onUnavailable();
+    }
+  }, [fileId, onUnavailable]);
+
+  useEffect(() => {
+    if (near && !src) void requestUrl();
+    // `src` queda fuera: solo se pide al acercarse; el reintento lo hace onError.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [near, requestUrl]);
+
+  function handleError() {
+    if (fileId && !retried.current) {
+      retried.current = true;
+      void requestUrl();
+    } else {
+      onUnavailable();
+    }
+  }
+
+  return (
+    <>
+      <button
+        ref={frame}
+        type="button"
+        className={`bubble-image${loaded ? " is-loaded" : ""}`}
+        aria-label={`Ver en grande. ${alt}`}
+        disabled={!loaded}
+        onClick={() => setViewing(true)}
+      >
+        {near && src && (
+          // eslint-disable-next-line @next/next/no-img-element -- URL firmada de Storage, sin optimizador
+          <img src={src} alt={alt} onLoad={() => setLoaded(true)} onError={handleError} />
+        )}
+      </button>
+
+      {/* En el `body`: dentro de la burbuja heredaría su color y su tamaño de letra. */}
+      {viewing &&
+        src &&
+        createPortal(
+          <ImageViewer
+            src={src}
+            alt={alt}
+            fileId={fileId}
+            filename={filename}
+            onClose={() => setViewing(false)}
+            onError={() => {
+              setViewing(false);
+              handleError();
+            }}
+          />,
+          document.body,
+        )}
+    </>
+  );
+}
+
+function ImageViewer({
+  src,
+  alt,
+  fileId,
+  filename,
+  onClose,
+  onError,
+}: {
+  src: string;
+  alt: string;
+  fileId: string | null;
+  filename: string | null;
+  onClose: () => void;
+  onError: () => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [saveFailed, setSaveFailed] = useState(false);
+
+  async function save() {
+    if (!fileId) return;
+    setSaving(true);
+    setSaveFailed(false);
+    try {
+      await saveStoredFile(fileId, filename ?? "imagen.jpg");
+    } catch {
+      setSaveFailed(true);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal title={filename ?? "Imagen"} onClose={onClose} wide>
+      {/* eslint-disable-next-line @next/next/no-img-element -- URL firmada de Storage, sin optimizador */}
+      <img className="image-viewer" src={src} alt={alt} onError={onError} />
+      {fileId && (
+        <div className="modal-foot">
+          {saveFailed && (
+            <span style={{ fontSize: 12, color: "var(--red)" }} role="alert">
+              No se pudo descargar.
+            </span>
+          )}
+          <button type="button" className="btn ghost" onClick={() => void save()} disabled={saving}>
+            <Icon name="download" />
+            {saving ? "Descargando…" : "Descargar"}
+          </button>
+        </div>
+      )}
+    </Modal>
   );
 }
 

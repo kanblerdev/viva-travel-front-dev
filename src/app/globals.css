@@ -806,6 +806,49 @@ table.t .th-sort.is-active svg { opacity: 1; color: var(--orange); }
 }
 .bubble-media-open:disabled { cursor: default; opacity: 0.7; text-decoration: none; }
 
+/* Foto en la burbuja. El marco reserva alto antes de cargar para que el hilo no
+   salte mientras llega cada imagen. */
+.bubble-image {
+  display: block; width: 260px; max-width: 100%; min-height: 160px;
+  padding: 0; margin-bottom: 5px; border: 0; border-radius: 8px; overflow: hidden;
+  background: rgba(127, 127, 127, 0.18); cursor: default;
+}
+.bubble-image.is-loaded { width: auto; min-height: 0; background: none; cursor: zoom-in; }
+.bubble-image img { display: block; max-width: 100%; max-height: 320px; }
+.bubble-image:not(.is-loaded) img { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.bubble-image:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; }
+.image-viewer {
+  display: block; max-width: 100%; max-height: 70vh; margin: 0 auto 14px; border-radius: 8px;
+}
+
+/* Acción sobre un mensaje: aparece al pasar por encima; en pantallas táctiles,
+   que no tienen hover, queda siempre a la vista. */
+.bubble-row { display: flex; align-items: center; gap: 6px; max-width: 74%; }
+.bubble-row.in { align-self: flex-start; }
+.bubble-row.out { align-self: flex-end; flex-direction: row-reverse; }
+.bubble-row > .bubble, .bubble-row > .bubble-failed-wrap { max-width: 100%; min-width: 0; }
+.bubble-action {
+  flex: none; width: 26px; height: 26px; display: grid; place-items: center;
+  padding: 0; border: 0; border-radius: 6px; background: none; cursor: pointer;
+  color: var(--text-faint); opacity: 0;
+}
+.bubble-action svg { width: 14px; height: 14px; }
+.bubble-action:hover { color: var(--red); background: var(--white); }
+.bubble-row:hover .bubble-action, .bubble-action:focus-visible { opacity: 1; }
+@media (hover: none) { .bubble-action { opacity: 1; } }
+
+/* Mensaje eliminado: se despinta del todo para que no se lea como uno vigente. */
+.bubble.deleted {
+  background: transparent; color: var(--text-mute);
+  border: 1px dashed var(--border);
+}
+.bubble-deleted-label { display: flex; align-items: center; gap: 5px; font-style: italic; }
+.bubble-deleted-label svg { flex: none; }
+.bubble-deleted-original {
+  margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border-soft); color: var(--text);
+}
+.bubble-deleted-actions { display: flex; gap: 12px; margin-top: 5px; font-size: 11px; font-weight: 600; }
+
 /* Adjuntar una cotización, al lado del campo de respuesta. */
 .composer-attach {
   width: 40px; height: 40px; flex: none;
