@@ -224,3 +224,81 @@ export function AssignConversationModal({
     </Modal>
   );
 }
+
+/* ──────────────────────────────── Eliminar chat ───────────────────────────── */
+
+/**
+ * Confirmar la eliminación. Dice lo que "eliminar" no hace —borrar el chat del
+ * teléfono del cliente— porque es lo primero que la gente da por hecho.
+ */
+export function DeleteConversationModal({
+  conversation,
+  onClose,
+  onDone,
+}: {
+  conversation: ConversationSummary;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleDelete() {
+    setSubmitting(true);
+    setError(null);
+    try {
+      await crmApi.deleteConversation(conversation.id);
+      onDone();
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "No se pudo eliminar el chat.");
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={
+        <>
+          <Icon name="trash" style={{ color: "var(--red)" }} />
+          Eliminar chat
+        </>
+      }
+      onClose={onClose}
+    >
+      <p className="modal-lead">
+        El chat con <b>{conversation.client?.fullName ?? "este contacto"}</b> sale de la bandeja y
+        del expediente. Sus mensajes y archivos se conservan, y se puede restaurar desde
+        “Ver eliminadas”, al final de la lista.
+      </p>
+
+      {error && (
+        <div className="auth-alert error" style={{ marginBottom: 14 }} role="alert">
+          <Icon name="target" />
+          <div>{error}</div>
+        </div>
+      )}
+
+      <div className="auth-alert info" style={{ marginBottom: 14 }}>
+        <Icon name="globe" />
+        <div>
+          No se borra del teléfono del cliente. Si vuelve a escribir, el chat reaparece con todo su
+          historial.
+        </div>
+      </div>
+
+      <div className="modal-foot">
+        <button type="button" className="btn ghost" onClick={onClose} disabled={submitting}>
+          Cancelar
+        </button>
+        <button
+          type="button"
+          className="btn danger"
+          onClick={() => void handleDelete()}
+          disabled={submitting}
+        >
+          {submitting ? "Eliminando…" : "Eliminar chat"}
+        </button>
+      </div>
+    </Modal>
+  );
+}

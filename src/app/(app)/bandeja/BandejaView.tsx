@@ -12,7 +12,6 @@ import {
   crmApi,
   DUPLICATE_REASON_LABEL,
   formatMoney,
-  type ConversationCounts,
   type ConversationDetail,
   type ConversationSummary,
   type ConversationView,
@@ -34,7 +33,11 @@ import {
 } from "@/lib/domain/enums";
 import { useDebouncedValue } from "@/lib/hooks/useDebouncedValue";
 import { usePolling } from "@/lib/hooks/usePolling";
-import { AssignConversationModal, TransferConversationModal } from "./modals";
+import {
+  AssignConversationModal,
+  DeleteConversationModal,
+  TransferConversationModal,
+} from "./modals";
 
 const CHANNEL_CLASS: Record<Channel, string> = {
   whatsapp: "wa",
@@ -42,19 +45,15 @@ const CHANNEL_CLASS: Record<Channel, string> = {
   instagram: "ig",
 };
 
-const CHANNEL_DOT: Record<Channel, string> = {
-  whatsapp: "var(--green)",
-  messenger: "var(--blue)",
-  instagram: "var(--purple)",
-};
-
 const VIEW_LABEL: Record<ConversationView, string> = {
   unassigned: "Sin asignar",
-  mine: "Míos",
+  mine: "Mías",
   all: "Todas",
+  deleted: "Eliminadas",
 };
 
-const VIEWS = Object.keys(VIEW_LABEL) as ConversationView[];
+/** "Eliminadas" no es una pestaña: es poco frecuente y se abre desde el pie de la lista. */
+const TAB_VIEWS: ConversationView[] = ["unassigned", "mine", "all"];
 
 const STATUS_FILTERS = ["open", "resolved"] as const;
 
@@ -65,6 +64,10 @@ const STATUS_FILTERS = ["open", "resolved"] as const;
  * la vez es poco tráfico: una consulta de lista y una de hilo por pestaña visible.
  */
 const POLL_MS = 10_000;
+/** Mismo tope que el backend: avisar antes de subir ahorra la espera. */
+const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
+const WHATSAPP_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+const ATTACHMENT_ACCEPT = ".jpg,.jpeg,.png,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt";
 const PAGE_SIZE = 50;
 /** La conexión con Meta cambia muy de vez en cuando: basta con mirarla cada minuto. */
 const CONNECTION_POLL_MS = 60_000;
@@ -82,18 +85,26 @@ export function BandejaView() {
   const pathname = usePathname();
   const params = useSearchParams();
 
-  const view = (VIEWS.find((v) => v === params.get("vista")) ?? "unassigned") as ConversationView;
+  const isManager = user?.role === "admin" || user?.role === "manager";
+  const requestedView = params.get("vista");
+  // Espejo de la regla del backend, que responde 403 a un Asesor en "Eliminadas".
+  const view: ConversationView =
+    requestedView === "deleted" && isManager
+      ? "deleted"
+      : (TAB_VIEWS.find((v) => v === requestedView) ?? "unassigned");
   const channel = CHANNELS.find((c) => c === params.get("canal"));
   const selectedId = params.get("conversacion");
   // Estado y asesor solo aplican a "Todas": las otras dos pestañas ya los fijan.
   const status = view === "all" ? STATUS_FILTERS.find((f) => f === params.get("estado")) : undefined;
   const advisorId = view === "all" ? (params.get("asesor") ?? undefined) : undefined;
 
+  const hasActiveFilters = Boolean(channel || status || advisorId);
+  // Plegados para dejarle el alto a la lista; abiertos si la URL ya trae filtros.
+  const [filtersOpen, setFiltersOpen] = useState(hasActiveFilters);
   const [search, setSearch] = useState(params.get("q") ?? "");
   const debouncedSearch = useDebouncedValue(search.trim());
   const [limit, setLimit] = useState(PAGE_SIZE);
   const [list, setList] = useState<{ items: ConversationSummary[]; total: number } | null>(null);
-  const [counts, setCounts] = useState<ConversationCounts | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [showContext, setShowContext] = useState(false);
   const [team, setTeam] = useState<TeamMember[]>([]);
@@ -138,19 +149,15 @@ export function BandejaView() {
 
   const loadList = useCallback(async () => {
     try {
-      const [page, nextCounts] = await Promise.all([
-        crmApi.listConversations({
-          view,
-          channel,
-          status,
-          advisorId,
-          search: debouncedSearch || undefined,
-          pageSize: limit,
-        }),
-        crmApi.conversationCounts(),
-      ]);
+      const page = await crmApi.listConversations({
+        view,
+        channel,
+        status,
+        advisorId,
+        search: debouncedSearch || undefined,
+        pageSize: limit,
+      });
       setList({ items: page.items, total: page.total });
-      setCounts(nextCounts);
       setListError(null);
     } catch (caught) {
       setListError(
@@ -187,6 +194,21 @@ export function BandejaView() {
     [loadList],
   );
 
+  const handleDeleted = useCallback(
+    (id: string) => {
+      setList((current) =>
+        current
+          ? {
+              items: current.items.filter((item) => item.id !== id),
+              total: Math.max(current.total - 1, 0),
+            }
+          : current,
+      );
+      void loadList();
+    },
+    [loadList],
+  );
+
   const disconnected = Boolean(connection && connection.status !== "connected");
 
   return (
@@ -201,89 +223,115 @@ export function BandejaView() {
       >
         {/* Columna izquierda · lista de conversaciones */}
         <div className="inbox-panel list-panel">
-          <Tabs
-            className="inbox-tabs"
-            options={VIEWS.map((v) => ({
-              id: v,
-              label: VIEW_LABEL[v],
-              count: counts
-                ? v === "unassigned"
-                  ? counts.unassigned
-                  : v === "mine"
-                    ? counts.mine
-                    : counts.all
-                : null,
-            }))}
-            value={view}
-            onChange={(next) => setParams({ vista: next === "unassigned" ? null : next })}
-            label="Vista de la bandeja"
-            idPrefix="bandeja"
-          />
+          {view === "deleted" ? (
+            <div className="inbox-deleted-head">
+              <span>Eliminadas</span>
+              <button type="button" className="inbox-link" onClick={() => setParams({ vista: null })}>
+                Volver a la bandeja
+              </button>
+            </div>
+          ) : (
+            <Tabs
+              className="inbox-tabs"
+              options={TAB_VIEWS.map((v) => ({ id: v, label: VIEW_LABEL[v] }))}
+              value={view}
+              onChange={(next) => setParams({ vista: next === "unassigned" ? null : next })}
+              label="Vista de la bandeja"
+              idPrefix="bandeja"
+            />
+          )}
 
           <div className="inbox-filters">
-            <label className="sr-only" htmlFor="inboxSearch">
-              Buscar contacto
-            </label>
-            <input
-              id="inboxSearch"
-              className="input"
-              type="search"
-              placeholder="Nombre, teléfono o usuario…"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-            />
-            <label className="sr-only" htmlFor="inboxChannel">
-              Canal
-            </label>
-            <select
-              id="inboxChannel"
-              className="input"
-              value={channel ?? ""}
-              onChange={(event) => setParams({ canal: event.target.value || null })}
-            >
-              <option value="">Todos los canales</option>
-              {CHANNELS.map((c) => (
-                <option key={c} value={c}>
-                  {CHANNEL_LABEL[c]}
-                </option>
-              ))}
-            </select>
-            {view === "all" && (
-              <>
-                <label className="sr-only" htmlFor="inboxStatus">
-                  Estado
+            <div className="inbox-search">
+              <label className="sr-only" htmlFor="inboxSearch">
+                Buscar contacto
+              </label>
+              <input
+                id="inboxSearch"
+                className="input"
+                type="search"
+                placeholder="Buscar contacto…"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+              <button
+                type="button"
+                className={`btn ghost tiny inbox-filter-toggle${hasActiveFilters ? " is-active" : ""}`}
+                aria-expanded={filtersOpen}
+                aria-controls="inboxFilterPanel"
+                onClick={() => setFiltersOpen((open) => !open)}
+              >
+                <Icon name="filter" />
+                Filtros
+                {hasActiveFilters && <span className="inbox-filter-dot" aria-label="con filtros activos" />}
+              </button>
+            </div>
+
+            {filtersOpen && (
+              <div className="inbox-filter-panel" id="inboxFilterPanel">
+                <label className="sr-only" htmlFor="inboxChannel">
+                  Canal
                 </label>
                 <select
-                  id="inboxStatus"
+                  id="inboxChannel"
                   className="input"
-                  value={status ?? ""}
-                  onChange={(event) => setParams({ estado: event.target.value || null })}
+                  value={channel ?? ""}
+                  onChange={(event) => setParams({ canal: event.target.value || null })}
                 >
-                  <option value="">Abiertas y resueltas</option>
-                  <option value="open">Solo abiertas</option>
-                  <option value="resolved">Solo resueltas</option>
-                </select>
-                <label className="sr-only" htmlFor="inboxAdvisor">
-                  Asesor
-                </label>
-                <select
-                  id="inboxAdvisor"
-                  className="input"
-                  value={advisorId ?? ""}
-                  onChange={(event) => setParams({ asesor: event.target.value || null })}
-                >
-                  <option value="">Cualquier asesor</option>
-                  {team.map((member) => (
-                    <option key={member.id} value={member.id}>
-                      {member.fullName}
+                  <option value="">Todos los canales</option>
+                  {CHANNELS.map((c) => (
+                    <option key={c} value={c}>
+                      {CHANNEL_LABEL[c]}
                     </option>
                   ))}
                 </select>
-              </>
+                {view === "all" && (
+                  <>
+                    <label className="sr-only" htmlFor="inboxStatus">
+                      Estado
+                    </label>
+                    <select
+                      id="inboxStatus"
+                      className="input"
+                      value={status ?? ""}
+                      onChange={(event) => setParams({ estado: event.target.value || null })}
+                    >
+                      <option value="">Todos los estados</option>
+                      <option value="open">Solo abiertas</option>
+                      <option value="resolved">Solo resueltas</option>
+                    </select>
+                    <label className="sr-only" htmlFor="inboxAdvisor">
+                      Asesor
+                    </label>
+                    <select
+                      id="inboxAdvisor"
+                      className="input"
+                      value={advisorId ?? ""}
+                      onChange={(event) => setParams({ asesor: event.target.value || null })}
+                    >
+                      <option value="">Todos los asesores</option>
+                      {team.map((member) => (
+                        <option key={member.id} value={member.id}>
+                          {member.fullName}
+                        </option>
+                      ))}
+                    </select>
+                  </>
+                )}
+                {hasActiveFilters && (
+                  <button
+                    type="button"
+                    className="inbox-link"
+                    onClick={() => setParams({ canal: null, estado: null, asesor: null })}
+                  >
+                    Quitar filtros
+                  </button>
+                )}
+              </div>
             )}
           </div>
 
-          <TabPanel id={view} idPrefix="bandeja" className="inbox-list">
+          <ConversationListBody view={view}>
             {listError && (
               <div className="inbox-empty" role="alert">
                 <span style={{ color: "var(--red)" }}>{listError}</span>
@@ -322,7 +370,15 @@ export function BandejaView() {
                 </button>
               </div>
             )}
-          </TabPanel>
+          </ConversationListBody>
+
+          {isManager && view !== "deleted" && (
+            <div className="inbox-list-foot">
+              <button type="button" className="inbox-link" onClick={() => setParams({ vista: "deleted" })}>
+                <Icon name="trash" width={12} height={12} /> Ver eliminadas
+              </button>
+            </div>
+          )}
         </div>
 
         {selectedId ? (
@@ -334,6 +390,10 @@ export function BandejaView() {
             onToggleContext={() => setShowContext((open) => !open)}
             onBack={() => select(null)}
             onChanged={handleChanged}
+            onDeleted={(id) => {
+              handleDeleted(id);
+              select(null);
+            }}
           />
         ) : (
           <div className="inbox-panel thread-panel">
@@ -345,6 +405,28 @@ export function BandejaView() {
         )}
       </div>
     </>
+  );
+}
+
+/** "Eliminadas" no tiene pestaña que lo rotule: un panel de pestaña quedaría huérfano. */
+function ConversationListBody({
+  view,
+  children,
+}: {
+  view: ConversationView;
+  children: React.ReactNode;
+}) {
+  if (view === "deleted") {
+    return (
+      <div className="inbox-list" role="region" aria-label="Conversaciones eliminadas" tabIndex={0}>
+        {children}
+      </div>
+    );
+  }
+  return (
+    <TabPanel id={view} idPrefix="bandeja" className="inbox-list">
+      {children}
+    </TabPanel>
   );
 }
 
@@ -409,6 +491,7 @@ function emptyMessage(view: ConversationView, filtered: boolean): string {
     return "No hay conversaciones esperando. Cuando un cliente escriba por WhatsApp, Messenger o Instagram, aparece acá hasta que alguien la tome.";
   }
   if (view === "mine") return "No tenés conversaciones abiertas a tu cargo.";
+  if (view === "deleted") return "No hay chats eliminados.";
   return "Todavía no llegó ninguna conversación.";
 }
 
@@ -427,6 +510,7 @@ function ConversationRow({
 }) {
   const name = conversation.client?.fullName ?? "Contacto sin expediente";
   const mine = conversation.advisor?.id === user?.id;
+  const deleted = Boolean(conversation.deletedAt);
 
   return (
     <button
@@ -439,7 +523,6 @@ function ConversationRow({
     >
       <span className="av">
         {conversation.client?.initials ?? "··"}
-        <span className="dot" style={{ background: CHANNEL_DOT[conversation.channel] }} />
       </span>
       <span className="body">
         <span className="top">
@@ -450,16 +533,23 @@ function ConversationRow({
         </span>
         <span className="prev">{conversation.lastMessagePreview ?? "—"}</span>
         <span className="inbox-item-tags">
-          {!conversation.advisor && conversation.status !== "resolved" && (
+          {/* El canal se escribe: un punto de color sobre el avatar se leía como "en línea". */}
+          <span className={`chip ${CHANNEL_CLASS[conversation.channel]}`}>
+            {CHANNEL_LABEL[conversation.channel]}
+          </span>
+          {deleted && <span className="chip red">Eliminada</span>}
+          {!deleted && !conversation.advisor && conversation.status !== "resolved" && (
             <span className="chip amber">Sin asignar</span>
           )}
-          {conversation.advisor && !mine && conversation.status !== "resolved" && (
+          {!deleted && conversation.advisor && !mine && conversation.status !== "resolved" && (
             <span className="chip navy">{conversation.advisor.fullName}</span>
           )}
-          {conversation.status === "resolved" && <span className="chip green">Resuelta</span>}
+          {!deleted && conversation.status === "resolved" && (
+            <span className="chip green">Resuelta</span>
+          )}
           {/* El contador solo significa algo para quien la atiende: es lo que
               esa persona no leyó. */}
-          {conversation.unreadCount > 0 && (mine || !conversation.advisor) && (
+          {!deleted && conversation.unreadCount > 0 && (mine || !conversation.advisor) && (
             <span className="inbox-unread">{conversation.unreadCount}</span>
           )}
         </span>
@@ -477,6 +567,7 @@ function ConversationPanes({
   onToggleContext,
   onBack,
   onChanged,
+  onDeleted,
 }: {
   conversationId: string;
   user: SessionUser | null;
@@ -484,6 +575,7 @@ function ConversationPanes({
   onToggleContext: () => void;
   onBack: () => void;
   onChanged: (updated: ConversationSummary) => void;
+  onDeleted: (id: string) => void;
 }) {
   const [detail, setDetail] = useState<ConversationDetail | null>(null);
   const [messages, setMessages] = useState<InboxMessage[]>([]);
@@ -494,6 +586,7 @@ function ConversationPanes({
   const [busy, setBusy] = useState(false);
   const [transferring, setTransferring] = useState(false);
   const [assigning, setAssigning] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   // Una vez que la persona pidió mensajes anteriores, "hay más" lo decide esa
   // paginación y no el refresco de la página más reciente.
   const loadedOlder = useRef(false);
@@ -528,7 +621,9 @@ function ConversationPanes({
 
   // Quien la atiende la abre: se apaga su contador. Otro que mira, no.
   useEffect(() => {
-    if (!detail || !user || detail.unreadCount === 0 || detail.advisor?.id !== user.id) return;
+    if (!detail || !user || detail.deletedAt || detail.unreadCount === 0 || detail.advisor?.id !== user.id) {
+      return;
+    }
     crmApi
       .markConversationRead(detail.id)
       .then((updated) => {
@@ -598,6 +693,7 @@ function ConversationPanes({
   // Espejo de la matriz 4.2; el backend lo vuelve a comprobar en cada acción.
   const canHandle = isManager || attendsIt;
   const name = detail.client?.fullName ?? "Contacto sin expediente";
+  const deleted = Boolean(detail.deletedAt);
 
   return (
     <>
@@ -620,7 +716,18 @@ function ConversationPanes({
           </div>
 
           <div className="thread-actions">
-            {!detail.advisor && (
+            {deleted && (
+              <button
+                type="button"
+                className="btn primary tiny"
+                disabled={busy}
+                onClick={() => void run(() => crmApi.restoreConversation(detail.id))}
+              >
+                <Icon name="check" />
+                Restaurar
+              </button>
+            )}
+            {!deleted && !detail.advisor && (
               <button
                 type="button"
                 className="btn primary tiny"
@@ -631,19 +738,19 @@ function ConversationPanes({
                 Tomar
               </button>
             )}
-            {canHandle && detail.advisor && (
+            {!deleted && canHandle && detail.advisor && (
               <button type="button" className="btn ghost tiny" disabled={busy} onClick={() => setTransferring(true)}>
                 <Icon name="arrow-right" />
                 Transferir
               </button>
             )}
-            {isManager && (
+            {!deleted && isManager && (
               <button type="button" className="btn ghost tiny" disabled={busy} onClick={() => setAssigning(true)}>
                 <Icon name="users" />
                 Reasignar
               </button>
             )}
-            {canHandle && detail.advisor && detail.status !== "resolved" && (
+            {!deleted && canHandle && detail.advisor && detail.status !== "resolved" && (
               <button
                 type="button"
                 className="btn ghost tiny"
@@ -654,12 +761,28 @@ function ConversationPanes({
                 Resolver
               </button>
             )}
+            {!deleted && isManager && (
+              <button type="button" className="btn ghost tiny" disabled={busy} onClick={() => setDeleting(true)}>
+                <Icon name="trash" />
+                Eliminar
+              </button>
+            )}
             <button type="button" className="btn ghost tiny inbox-ctx-toggle" onClick={onToggleContext}>
               <Icon name="folder" />
               {showContext ? "Ver hilo" : "Cliente"}
             </button>
           </div>
         </div>
+
+        {detail.deletedAt && (
+          <div className="auth-alert info thread-alert" role="status">
+            <Icon name="trash" />
+            <div>
+              Chat eliminado{detail.deletedBy ? ` por ${detail.deletedBy.fullName}` : ""} (
+              {absolute(detail.deletedAt)}). Si el cliente vuelve a escribir, reaparece solo.
+            </div>
+          </div>
+        )}
 
         {actionError && (
           <div className="auth-alert error dismissable thread-alert" role="alert">
@@ -695,10 +818,12 @@ function ConversationPanes({
           )}
         </div>
 
-        <Composer
-          conversation={detail}
-          onSent={(message) => setMessages((current) => mergeMessages(current, [message]))}
-        />
+        {!deleted && (
+          <Composer
+            conversation={detail}
+            onSent={(message) => setMessages((current) => mergeMessages(current, [message]))}
+          />
+        )}
       </div>
 
       <div className="inbox-panel ctx-panel">
@@ -714,6 +839,14 @@ function ConversationPanes({
             onChanged(updated);
             void refresh();
           }}
+        />
+      )}
+
+      {deleting && (
+        <DeleteConversationModal
+          conversation={detail}
+          onClose={() => setDeleting(false)}
+          onDone={() => onDeleted(detail.id)}
         />
       )}
 
@@ -918,6 +1051,8 @@ function Composer({
   const [error, setError] = useState<string | null>(null);
   const [usingTemplate, setUsingTemplate] = useState(false);
   const [sharingQuote, setSharingQuote] = useState(false);
+  const [attachment, setAttachment] = useState<File | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
 
   const canSend = replyWindow.open && text.trim().length > 0 && !sending;
 
@@ -958,6 +1093,26 @@ function Composer({
     }
   }
 
+  function pickAttachment(file: File | undefined) {
+    // Vaciarlo permite volver a elegir el mismo archivo después de cancelar.
+    if (fileInput.current) fileInput.current.value = "";
+    if (!file) return;
+    if (file.size > ATTACHMENT_MAX_BYTES) {
+      setError("El archivo supera el límite de 10 MB.");
+      return;
+    }
+    setError(null);
+    setAttachment(file);
+  }
+
+  function handleAttachmentSent(message: InboxMessage) {
+    setAttachment(null);
+    onSent(message);
+    if (message.deliveryStatus === "failed") {
+      setError(failureText(message.failureReason ?? "Meta rechazó el envío."));
+    }
+  }
+
   return (
     <div className="composer">
       <div className="window">
@@ -991,7 +1146,15 @@ function Composer({
         </div>
       )}
 
-      {canShareQuote && sharingQuote ? (
+      {attachment && replyWindow.open ? (
+        <AttachmentSender
+          conversationId={conversation.id}
+          channel={conversation.channel}
+          file={attachment}
+          onCancel={() => setAttachment(null)}
+          onSent={handleAttachmentSent}
+        />
+      ) : canShareQuote && sharingQuote ? (
         <QuoteSharer
           conversationId={conversation.id}
           clientId={conversation.client!.id}
@@ -1045,6 +1208,24 @@ function Composer({
             placeholder="Escribí tu respuesta…"
             aria-label="Mensaje"
           />
+          <input
+            ref={fileInput}
+            type="file"
+            hidden
+            accept={conversation.channel === "instagram" ? ".jpg,.jpeg,.png" : ATTACHMENT_ACCEPT}
+            aria-label="Elegir archivo para adjuntar"
+            onChange={(event) => pickAttachment(event.target.files?.[0])}
+          />
+          <button
+            type="button"
+            className="composer-attach"
+            aria-label="Adjuntar una foto o un archivo"
+            title="Adjuntar una foto o un archivo"
+            onClick={() => fileInput.current?.click()}
+            disabled={sending || !replyWindow.open}
+          >
+            <Icon name="paperclip" />
+          </button>
           {canShareQuote && (
             <button
               type="button"
@@ -1057,7 +1238,7 @@ function Composer({
               }}
               disabled={sending}
             >
-              <Icon name="paperclip" />
+              <Icon name="doc" />
             </button>
           )}
           <button
@@ -1108,6 +1289,117 @@ function AttachmentLink({ fileId }: { fileId: string }) {
     <button type="button" className="bubble-media-open" onClick={() => void open()} disabled={busy}>
       {busy ? "Abriendo…" : "Abrir"}
     </button>
+  );
+}
+
+/* ─────────────────────────── Adjuntar un archivo ──────────────────────────── */
+
+/**
+ * Revisar el archivo antes de mandarlo: una vez que sale, no se puede retirar del
+ * teléfono del cliente. El texto solo se ofrece en WhatsApp: Messenger e Instagram
+ * no lo llevan en el mismo mensaje. El backend vuelve a comprobarlo todo.
+ */
+function AttachmentSender({
+  conversationId,
+  channel,
+  file,
+  onCancel,
+  onSent,
+}: {
+  conversationId: string;
+  channel: Channel;
+  file: File;
+  onCancel: () => void;
+  onSent: (message: InboxMessage) => void;
+}) {
+  const [caption, setCaption] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+
+  const image = file.type === "image/jpeg" || file.type === "image/png";
+  const whatsapp = channel === "whatsapp";
+
+  useEffect(() => {
+    if (!image) return;
+    const url = URL.createObjectURL(file);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file, image]);
+
+  async function send() {
+    setSending(true);
+    setError(null);
+    try {
+      onSent(
+        await crmApi.sendConversationAttachment(
+          conversationId,
+          file,
+          whatsapp ? caption.trim() || undefined : undefined,
+        ),
+      );
+    } catch (caught) {
+      setError(caught instanceof ApiError ? caught.message : "No se pudo enviar el archivo.");
+      setSending(false);
+    }
+  }
+
+  return (
+    <div className="composer-template">
+      {error && (
+        <div className="composer-error" role="alert">
+          <Icon name="target" width={12} height={12} />
+          <span>{error}</span>
+        </div>
+      )}
+
+      <div className="composer-attachment-file">
+        {previewUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element -- vista previa local (blob:)
+          <img src={previewUrl} alt={`Vista previa de ${file.name}`} />
+        ) : (
+          <Icon name="paperclip" />
+        )}
+        <div>
+          <b title={file.name}>{file.name}</b>
+          {file.size < 1024 * 1024
+            ? `${Math.ceil(file.size / 1024)} KB`
+            : `${(file.size / (1024 * 1024)).toFixed(1)} MB`}
+          {whatsapp && image && file.size > WHATSAPP_IMAGE_MAX_BYTES && " · sale como documento por su tamaño"}
+        </div>
+      </div>
+
+      {whatsapp ? (
+        <div>
+          <label className="composer-template-label" htmlFor="attachment-caption">
+            Mensaje que lo acompaña
+          </label>
+          <input
+            id="attachment-caption"
+            value={caption}
+            onChange={(event) => setCaption(event.target.value)}
+            maxLength={900}
+            disabled={sending}
+            placeholder="Opcional"
+            autoComplete="off"
+          />
+        </div>
+      ) : (
+        <p style={{ fontSize: 11 }}>
+          {CHANNEL_LABEL[channel]} no lleva texto junto al archivo: si hace falta, escribilo en un
+          mensaje aparte.
+        </p>
+      )}
+
+      <div className="composer-template-actions">
+        <button type="button" className="btn primary tiny" onClick={() => void send()} disabled={sending}>
+          {sending ? "Enviando…" : "Enviar archivo"}
+        </button>
+        <button type="button" className="btn ghost tiny" onClick={onCancel} disabled={sending}>
+          Cancelar
+        </button>
+      </div>
+    </div>
   );
 }
 

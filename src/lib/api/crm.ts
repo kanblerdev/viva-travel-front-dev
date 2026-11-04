@@ -929,6 +929,9 @@ export type ConversationSummary = {
   whatsAppWindowExpiresAt: string | null;
   unreadCount: number;
   resolvedAt: string | null;
+  /** Con fecha, el chat está eliminado. Solo lo ven Gerente y Administrador. */
+  deletedAt: string | null;
+  deletedBy: ConversationPerson | null;
   createdAt: string;
 };
 
@@ -1002,7 +1005,7 @@ export type SendableTemplate = {
   variables: string[];
 };
 
-export type ConversationView = "unassigned" | "mine" | "all";
+export type ConversationView = "unassigned" | "mine" | "all" | "deleted";
 
 export type ConversationFilters = {
   view?: ConversationView;
@@ -1040,7 +1043,7 @@ export type ConversationCounts = {
 
 async function authed<T>(
   path: string,
-  options: { method?: "GET" | "POST" | "PATCH"; body?: unknown } = {},
+  options: { method?: "GET" | "POST" | "PATCH" | "DELETE"; body?: unknown } = {},
 ): Promise<T> {
   const token = await getIdToken();
   if (!token) throw new Error("La sesión expiró. Volvé a iniciar sesión.");
@@ -1472,6 +1475,13 @@ export const crmApi = {
   resolveConversation: (id: string) =>
     authed<ConversationSummary>(`/conversations/${id}/resolver`, { method: "POST" }),
 
+  /** Solo Gerente y Administrador. Conserva mensajes y adjuntos. */
+  deleteConversation: (id: string) =>
+    authed<ConversationSummary>(`/conversations/${id}`, { method: "DELETE" }),
+
+  restoreConversation: (id: string) =>
+    authed<ConversationSummary>(`/conversations/${id}/restaurar`, { method: "POST" }),
+
   /** Solo apaga el contador si quien llama la atiende. */
   markConversationRead: (id: string) =>
     authed<ConversationSummary>(`/conversations/${id}/leida`, { method: "POST" }),
@@ -1502,6 +1512,22 @@ export const crmApi = {
       method: "POST",
       body: { quoteId, ...(message ? { message } : {}) },
     }),
+
+  /**
+   * Foto o archivo por el hilo. Igual que el texto, un 201 no garantiza la
+   * entrega: un rechazo de Meta vuelve como mensaje `failed`.
+   */
+  sendConversationAttachment: async (id: string, file: File, caption?: string) => {
+    const token = await getIdToken();
+    if (!token) throw new Error("La sesión expiró. Volvé a iniciar sesión.");
+    return apiUpload<InboxMessage>(
+      `/conversations/${id}/adjunto`,
+      file,
+      token,
+      60_000,
+      caption ? { caption } : {},
+    );
+  },
 
   /** Aprobadas en la cuenta de este hilo · HU-HSM-03. Vacío fuera de WhatsApp. */
   conversationTemplates: (id: string) =>
