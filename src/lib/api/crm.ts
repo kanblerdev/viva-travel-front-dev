@@ -1021,6 +1021,33 @@ export type ConversationFilters = {
   search?: string;
   page?: number;
   pageSize?: number;
+  /** Cursor de la tanda siguiente: el `nextCursor` de la respuesta anterior. */
+  before?: string;
+  beforeId?: string;
+};
+
+/** Una tanda de la bandeja, paginada por posición. */
+export type ConversationPage = {
+  items: ConversationSummary[];
+  hasMore: boolean;
+  /** Para pedir la tanda siguiente; `null` si no hay más. */
+  nextCursor: { before: string; beforeId: string } | null;
+  pageSize: number;
+  /** Solo si se pidió por `page`. */
+  total: number | null;
+  /** Desde dónde preguntar por cambios después de esta tanda. */
+  nextSince: string;
+};
+
+/** Lo que cambió en la bandeja desde `since`. */
+export type ConversationChanges = {
+  /** Demasiados cambios: recargar la primera tanda. */
+  reset: boolean;
+  /** Los tocados que corresponden a la vista, ya actualizados. */
+  items: ConversationSummary[];
+  /** Los tocados que dejaron de corresponder: se sacan de la lista. */
+  removedIds: string[];
+  nextSince: string;
 };
 
 /**
@@ -1501,7 +1528,14 @@ export const crmApi = {
   /* ── Bandeja · HU-MSG-02 a HU-MSG-13 ─────────────────────────────────────── */
 
   listConversations: (filters: ConversationFilters = {}) =>
-    authed<Paginated<ConversationSummary>>(`/conversations${toQuery(filters)}`),
+    authed<ConversationPage>(`/conversations${toQuery(filters)}`),
+
+  /** Actualización periódica de la bandeja: solo lo que cambió. */
+  conversationChanges: (
+    filters: Omit<ConversationFilters, "page" | "pageSize" | "before" | "beforeId" | "clientId"> & {
+      since: string;
+    },
+  ) => authed<ConversationChanges>(`/conversations/cambios${toQuery(filters)}`),
 
   conversationCounts: () => authed<ConversationCounts>("/conversations/counts"),
 
@@ -1510,9 +1544,13 @@ export const crmApi = {
   getConversation: (id: string) => authed<ConversationDetail>(`/conversations/${id}`),
 
   /** Página de mensajes anteriores al cursor, en orden cronológico. */
-  conversationMessages: (id: string, cursor?: { before: string; beforeId: string }) =>
+  conversationMessages: (
+    id: string,
+    cursor?: { before: string; beforeId: string },
+    limit?: number,
+  ) =>
     authed<{ items: InboxMessage[]; hasMore: boolean }>(
-      `/conversations/${id}/messages${toQuery({ ...cursor })}`,
+      `/conversations/${id}/messages${toQuery({ ...cursor, limit })}`,
     ),
 
   /** A nombre de quien llama. 409 si otra persona la tomó antes. */

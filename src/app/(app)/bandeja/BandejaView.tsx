@@ -37,6 +37,7 @@ import {
 import { useDebouncedValue } from "@/lib/hooks/useDebouncedValue";
 import { useIdempotencyKey } from "@/lib/hooks/useIdempotencyKey";
 import { usePolling } from "@/lib/hooks/usePolling";
+import { useInfiniteTrigger } from "@/lib/hooks/useInfiniteTrigger";
 import { useThreadScroll } from "@/lib/hooks/useThreadScroll";
 import {
   AssignConversationModal,
@@ -44,6 +45,7 @@ import {
   DeleteMessageModal,
   TransferConversationModal,
 } from "./modals";
+import { useConversationFeed } from "./useConversationFeed";
 
 const CHANNEL_CLASS: Record<Channel, string> = {
   whatsapp: "wa",
@@ -74,7 +76,8 @@ const POLL_MS = 10_000;
 const ATTACHMENT_MAX_BYTES = 10 * 1024 * 1024;
 const WHATSAPP_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
 const ATTACHMENT_ACCEPT = ".jpg,.jpeg,.png,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt";
-const PAGE_SIZE = 50;
+/** Mensajes por tanda en el hilo: la primera pantalla y cada scroll hacia arriba. */
+const MESSAGE_PAGE_SIZE = 25;
 /** La conexión con Meta cambia muy de vez en cuando: basta con mirarla cada minuto. */
 const CONNECTION_POLL_MS = 60_000;
 
@@ -109,9 +112,6 @@ export function BandejaView() {
   const [filtersOpen, setFiltersOpen] = useState(hasActiveFilters);
   const [search, setSearch] = useState(params.get("q") ?? "");
   const debouncedSearch = useDebouncedValue(search.trim());
-  const [limit, setLimit] = useState(PAGE_SIZE);
-  const [list, setList] = useState<{ items: ConversationSummary[]; total: number } | null>(null);
-  const [listError, setListError] = useState<string | null>(null);
   const [showContext, setShowContext] = useState(false);
   const [team, setTeam] = useState<TeamMember[]>([]);
   const [connection, setConnection] = useState<MessagingConnection | null>(null);
@@ -150,70 +150,28 @@ export function BandejaView() {
     if ((params.get("q") ?? "") !== debouncedSearch) setParams({ q: debouncedSearch || null });
   }, [debouncedSearch, params, setParams]);
 
-  // Otra pestaña o filtro: la lista vuelve a la primera tanda.
-  useEffect(() => setLimit(PAGE_SIZE), [view, channel, status, advisorId, debouncedSearch]);
-
-  const loadList = useCallback(async () => {
-    try {
-      const page = await crmApi.listConversations({
-        view,
-        channel,
-        status,
-        advisorId,
-        search: debouncedSearch || undefined,
-        pageSize: limit,
-      });
-      setList({ items: page.items, total: page.total });
-      setListError(null);
-    } catch (caught) {
-      setListError(
-        caught instanceof ApiError ? caught.message : "No se pudo cargar la bandeja.",
-      );
-    }
-  }, [view, channel, status, advisorId, debouncedSearch, limit]);
-
-  // Cambiar un filtro vacía la lista en el acto: mostrar la anterior mientras
-  // llega la nueva haría creer que el filtro no hizo nada.
-  useEffect(() => setList(null), [view, channel, status, advisorId, debouncedSearch]);
-
-  usePolling(loadList, POLL_MS, Boolean(user), loadList);
+  // Por tandas de 20, con scroll infinito, y cada diez segundos solo lo que
+  // cambió: ver `useConversationFeed`.
+  const feed = useConversationFeed(
+    { view, channel, status, advisorId, search: debouncedSearch || undefined },
+    Boolean(user),
+    POLL_MS,
+  );
+  const list = feed.items;
+  const loadMoreRef = useInfiniteTrigger(() => void feed.loadMore(), {
+    enabled: feed.hasMore && !feed.loadingMore,
+    version: list?.length ?? 0,
+    rootSelector: ".inbox-list",
+  });
 
   const select = (id: string | null) => {
     setShowContext(false);
     setParams({ conversacion: id });
   };
 
-  // Estable a propósito: el hilo lo usa dentro de efectos, y una función nueva en
-  // cada refresco de la lista los volvería a disparar.
-  const handleChanged = useCallback(
-    (updated: ConversationSummary) => {
-      setList((current) =>
-        current
-          ? {
-              ...current,
-              items: current.items.map((item) => (item.id === updated.id ? updated : item)),
-            }
-          : current,
-      );
-      void loadList();
-    },
-    [loadList],
-  );
-
-  const handleDeleted = useCallback(
-    (id: string) => {
-      setList((current) =>
-        current
-          ? {
-              items: current.items.filter((item) => item.id !== id),
-              total: Math.max(current.total - 1, 0),
-            }
-          : current,
-      );
-      void loadList();
-    },
-    [loadList],
-  );
+  // Estables a propósito: el hilo los usa dentro de efectos.
+  const handleChanged = feed.replace;
+  const handleDeleted = feed.remove;
 
   const disconnected = Boolean(connection && connection.status !== "connected");
 
@@ -338,18 +296,18 @@ export function BandejaView() {
           </div>
 
           <ConversationListBody view={view}>
-            {listError && (
+            {feed.error && (
               <div className="inbox-empty" role="alert">
-                <span style={{ color: "var(--red)" }}>{listError}</span>
-                <button type="button" className="btn ghost tiny" onClick={() => void loadList()}>
+                <span style={{ color: "var(--red)" }}>{feed.error}</span>
+                <button type="button" className="btn ghost tiny" onClick={() => void feed.refresh()}>
                   Reintentar
                 </button>
               </div>
             )}
 
-            {!list && !listError && <div className="inbox-empty">Cargando conversaciones…</div>}
+            {!list && !feed.error && <div className="inbox-empty">Cargando conversaciones…</div>}
 
-            {list?.items.map((conversation) => (
+            {list?.map((conversation) => (
               <ConversationRow
                 key={conversation.id}
                 conversation={conversation}
@@ -359,20 +317,23 @@ export function BandejaView() {
               />
             ))}
 
-            {list && list.items.length === 0 && (
+            {list && list.length === 0 && (
               <div className="inbox-empty">
                 {emptyMessage(view, Boolean(debouncedSearch || channel || status || advisorId))}
               </div>
             )}
 
-            {list && list.items.length < list.total && (
+            {list && feed.hasMore && (
               <div style={{ padding: 12, textAlign: "center" }}>
+                {/* Se pide sola al acercarse; el botón queda para el teclado. */}
                 <button
+                  ref={loadMoreRef}
                   type="button"
                   className="btn ghost tiny"
-                  onClick={() => setLimit((current) => current + PAGE_SIZE)}
+                  disabled={feed.loadingMore}
+                  onClick={() => void feed.loadMore()}
                 >
-                  Cargar más · quedan {list.total - list.items.length}
+                  {feed.loadingMore ? "Cargando…" : "Cargar más chats"}
                 </button>
               </div>
             )}
@@ -587,6 +548,7 @@ function ConversationPanes({
   const [messages, setMessages] = useState<InboxMessage[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const loadingOlderRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -610,7 +572,7 @@ function ConversationPanes({
     try {
       const [nextDetail, latest] = await Promise.all([
         crmApi.getConversation(conversationId),
-        crmApi.conversationMessages(conversationId),
+        crmApi.conversationMessages(conversationId, undefined, MESSAGE_PAGE_SIZE),
       ]);
       setDetail(nextDetail);
       setMessages((current) => mergeMessages(current, latest.items));
@@ -643,21 +605,35 @@ function ConversationPanes({
 
   async function loadOlder() {
     const oldest = messages[0];
-    if (!oldest) return;
+    if (!oldest || loadingOlderRef.current) return;
+    loadingOlderRef.current = true;
     setLoadingOlder(true);
     try {
-      const page = await crmApi.conversationMessages(conversationId, {
-        before: oldest.occurredAt,
-        beforeId: oldest.id,
-      });
+      const page = await crmApi.conversationMessages(
+        conversationId,
+        { before: oldest.occurredAt, beforeId: oldest.id },
+        MESSAGE_PAGE_SIZE,
+      );
       loadedOlder.current = true;
       threadScroll.keepPositionOnPrepend();
       setMessages((current) => mergeMessages(page.items, current));
       setHasMore(page.hasMore);
+    } catch {
+      // Sin aviso: el botón sigue ahí y el próximo scroll lo vuelve a intentar.
     } finally {
+      loadingOlderRef.current = false;
       setLoadingOlder(false);
     }
   }
+
+  // Al subir hasta el principio, como en WhatsApp Web: los anteriores llegan
+  // solos y la posición se conserva (`keepPositionOnPrepend`).
+  const olderRef = useInfiniteTrigger(() => void loadOlder(), {
+    enabled: hasMore && !loadingOlder && messages.length > 0,
+    version: messages.length,
+    rootSelector: ".thread-body",
+    margin: 160,
+  });
 
   async function run(action: () => Promise<ConversationSummary>) {
     setBusy(true);
@@ -828,6 +804,7 @@ function ConversationPanes({
           <div className="thread-content" ref={threadScroll.contentRef}>
             {hasMore && (
               <button
+                ref={olderRef}
                 type="button"
                 className="btn ghost tiny"
                 style={{ alignSelf: "center" }}
