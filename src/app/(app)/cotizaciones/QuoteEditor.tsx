@@ -27,6 +27,7 @@ import {
   type QuoteType,
   type ServiceType,
 } from "@/lib/domain/enums";
+import { useIdempotencyKey } from "@/lib/hooks/useIdempotencyKey";
 import {
   commissionAmount,
   fromCents,
@@ -305,6 +306,11 @@ export function QuoteEditor({
   /** Sucursales, solo para el expediente que llegó sin sucursal de origen. */
   const [branches, setBranches] = useState<{ id: string; name: string }[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  /*
+   * Guardar dos veces el mismo borrador —doble clic, o reintentar después de
+   * "no respondió a tiempo"— no crea dos cotizaciones ni dos versiones.
+   */
+  const idem = useIdempotencyKey();
   const [saved, setSaved] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -591,9 +597,11 @@ export function QuoteEditor({
         continue;
       }
       if (!entry.file) continue;
-      const stored = await crmApi.uploadFile(entry.file, {
-        clientId: draft.clientId,
-        fileType: "quote_annex",
+      const params = { clientId: draft.clientId, fileType: "quote_annex" as const };
+      // La clave va por imagen del borrador: si la subida salió pero la
+      // respuesta se perdió, el reintento no deja una copia huérfana.
+      const stored = await crmApi.uploadFile(entry.file, params, {
+        idempotencyKey: idem.keyFor({ annex: entry.key, file: entry.file, ...params }),
       });
       uploaded.set(entry.key, stored.id);
       ids.push(stored.id);
@@ -806,6 +814,7 @@ export function QuoteEditor({
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
+    if (submitting) return;
     setSubmitting(true);
     setError(null);
 
@@ -813,9 +822,16 @@ export function QuoteEditor({
       // Primero las imágenes: sin sus ids no hay payload completo que mandar.
       const annexImageIds = await uploadPendingAnnexImages();
       const payload = { ...buildPayload(), annexImageIds };
-      const result = quote
-        ? await crmApi.updateQuote(quote.id, buildUpdate(payload))
-        : await crmApi.createQuote(payload);
+      let result: QuoteDetail;
+      if (quote) {
+        const update = buildUpdate(payload);
+        result = await crmApi.updateQuote(quote.id, update, {
+          idempotencyKey: idem.keyFor({ quote: quote.id, ...update }),
+        });
+      } else {
+        result = await crmApi.createQuote(payload, { idempotencyKey: idem.keyFor(payload) });
+      }
+      idem.renew();
 
       // Marca el borrador como guardado ANTES de navegar: si no, la guardia de
       // salida se dispara sobre los cambios que se acaban de persistir.

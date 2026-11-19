@@ -7,6 +7,7 @@ import { RelativeTime } from "@/components/RelativeTime";
 import { EmailLinks, PhoneLinks } from "@/components/ContactLinks";
 import { ApiError } from "@/lib/api/client";
 import { crmApi, formatAmount, type SaleSummary } from "@/lib/api/crm";
+import { useIdempotencyKey } from "@/lib/hooks/useIdempotencyKey";
 
 /**
  * Agenda de cobro.
@@ -145,12 +146,18 @@ function AgendaRow({ sale, onLogged }: { sale: SaleSummary; onLogged: () => void
   const [error, setError] = useState<string | null>(null);
 
   const days = sale.paymentDueDate ? daysUntil(sale.paymentDueDate) : null;
+  const idem = useIdempotencyKey();
 
   async function log() {
+    if (busy) return;
     setBusy(true);
     setError(null);
     try {
-      await crmApi.logCollectionContact(sale.id, note.trim() || undefined);
+      const text = note.trim() || undefined;
+      await crmApi.logCollectionContact(sale.id, text, {
+        idempotencyKey: idem.keyFor({ sale: sale.id, note: text }),
+      });
+      idem.renew();
       setLogging(false);
       setNote("");
       onLogged();

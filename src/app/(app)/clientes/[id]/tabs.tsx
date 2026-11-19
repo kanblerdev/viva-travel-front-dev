@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Icon } from "@/components/Icon";
 import { Modal } from "@/components/Modal";
@@ -31,6 +31,7 @@ import {
   SALE_STATUS_LABEL,
   type FileType,
 } from "@/lib/domain/enums";
+import { useIdempotencyKey } from "@/lib/hooks/useIdempotencyKey";
 
 /** Clase del chip por canal, igual que en la bandeja. */
 const CONVERSATION_CHANNEL_CLASS = { whatsapp: "wa", messenger: "ms", instagram: "ig" } as const;
@@ -310,6 +311,9 @@ export function ArchivosTab({ clientId, canEdit }: { clientId: string; canEdit: 
   const [fileType, setFileType] = useState<FileType>("passport");
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** Archivo cuyo nombre se está editando; uno a la vez. */
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const idem = useIdempotencyKey();
 
   const load = useCallback(() => {
     crmApi
@@ -323,10 +327,16 @@ export function ArchivosTab({ clientId, canEdit }: { clientId: string; canEdit: 
   }, [load]);
 
   async function upload(file: File) {
+    if (uploading) return;
     setUploading(true);
     setError(null);
     try {
-      await crmApi.uploadFile(file, { clientId, fileType });
+      const params = { clientId, fileType };
+      // Reintentar la misma carga tras un corte no deja el archivo dos veces.
+      await crmApi.uploadFile(file, params, {
+        idempotencyKey: idem.keyFor({ file, ...params }),
+      });
+      idem.renew();
       load();
     } catch (caught) {
       setError(
@@ -427,7 +437,23 @@ export function ArchivosTab({ clientId, canEdit }: { clientId: string; canEdit: 
               <tbody>
                 {files.map((file) => (
                   <tr key={file.id}>
-                    <td style={{ fontWeight: 600 }}>{file.originalName}</td>
+                    <td style={{ fontWeight: 600 }}>
+                      {renamingId === file.id ? (
+                        <FileNameEditor
+                          file={file}
+                          onCancel={() => setRenamingId(null)}
+                          onSaved={(updated) => {
+                            setFiles((prev) =>
+                              prev?.map((item) => (item.id === updated.id ? updated : item)) ??
+                              prev,
+                            );
+                            setRenamingId(null);
+                          }}
+                        />
+                      ) : (
+                        file.originalName
+                      )}
+                    </td>
                     <td>
                       <span className="chip">{FILE_TYPE_LABEL[file.fileType]}</span>
                     </td>
@@ -438,11 +464,24 @@ export function ArchivosTab({ clientId, canEdit }: { clientId: string; canEdit: 
                       <RelativeTime iso={file.uploadedAt} />
                     </td>
                     <td>
-                      <SignedFileLink
-                        fileId={file.id}
-                        label="Abrir"
-                        fileName={file.originalName}
-                      />
+                      <span style={{ display: "flex", gap: 6 }}>
+                        <SignedFileLink
+                          fileId={file.id}
+                          label="Abrir"
+                          fileName={file.originalName}
+                        />
+                        {canEdit && renamingId !== file.id && (
+                          <button
+                            type="button"
+                            className="btn ghost tiny"
+                            onClick={() => setRenamingId(file.id)}
+                            aria-label={`Renombrar ${file.originalName}`}
+                            title="Renombrar"
+                          >
+                            <Icon name="edit" />
+                          </button>
+                        )}
+                      </span>
                     </td>
                   </tr>
                 ))}
@@ -452,6 +491,105 @@ export function ArchivosTab({ clientId, canEdit }: { clientId: string; canEdit: 
         </div>
       )}
     </div>
+  );
+}
+
+/** Extensión con el punto, o vacío. Espejo de `fileExtension` del backend. */
+function fileExtension(name: string): string {
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot) : "";
+}
+
+/**
+ * Edición del nombre de un archivo, en la misma fila.
+ *
+ * Se edita solo el nombre: la extensión queda fija a la derecha porque el tipo
+ * del archivo no cambia por renombrarlo, y el backend la conserva igual.
+ * Enter guarda y Escape cancela.
+ */
+function FileNameEditor({
+  file,
+  onCancel,
+  onSaved,
+}: {
+  file: StoredFileRef;
+  onCancel: () => void;
+  onSaved: (file: StoredFileRef) => void;
+}) {
+  const extension = fileExtension(file.originalName);
+  const [value, setValue] = useState(
+    extension ? file.originalName.slice(0, -extension.length) : file.originalName,
+  );
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    inputRef.current?.select();
+  }, []);
+
+  async function save() {
+    const name = value.trim();
+    if (!name) {
+      setError("Escribí un nombre para el archivo.");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      onSaved(await crmApi.renameFile(file.id, name));
+    } catch (caught) {
+      setError(
+        caught instanceof ApiError ? caught.message : "No se pudo renombrar el archivo.",
+      );
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        void save();
+      }}
+      style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 220 }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <input
+          ref={inputRef}
+          className="input"
+          value={value}
+          maxLength={200 - extension.length}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") onCancel();
+          }}
+          disabled={saving}
+          aria-label="Nombre del archivo"
+          aria-invalid={error ? true : undefined}
+          style={{ padding: "6px 10px", fontSize: 13 }}
+        />
+        {extension && (
+          <span style={{ fontSize: 12, color: "var(--text-mute)", fontWeight: 400 }}>
+            {extension}
+          </span>
+        )}
+      </div>
+      {error && (
+        <div role="alert" style={{ fontSize: 12, color: "var(--red)", fontWeight: 400 }}>
+          {error}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 6 }}>
+        <button type="submit" className="btn primary tiny" disabled={saving}>
+          <Icon name="check" />
+          {saving ? "Guardando…" : "Guardar"}
+        </button>
+        <button type="button" className="btn ghost tiny" onClick={onCancel} disabled={saving}>
+          Cancelar
+        </button>
+      </div>
+    </form>
   );
 }
 

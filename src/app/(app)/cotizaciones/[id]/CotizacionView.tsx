@@ -26,6 +26,7 @@ import {
   SERVICE_TYPE_LABEL,
   type QuoteStatus,
 } from "@/lib/domain/enums";
+import { useIdempotencyKey } from "@/lib/hooks/useIdempotencyKey";
 import { QuoteEditor } from "../QuoteEditor";
 
 /**
@@ -75,6 +76,8 @@ export function CotizacionView({ quoteId }: { quoteId: string }) {
   const [editing, setEditing] = useState(false);
   const [sending, setSending] = useState(false);
   const [busy, setBusy] = useState(false);
+  /** Duplicar y aceptar: un doble clic no deja dos copias ni dos ventas. */
+  const idem = useIdempotencyKey();
   const [openVersion, setOpenVersion] = useState<QuoteVersionData | null>(null);
   /** Transición pendiente de confirmar. Las dos que cierran exigen motivo. */
   const [pendingStatus, setPendingStatus] = useState<QuoteStatus | null>(null);
@@ -143,10 +146,14 @@ export function CotizacionView({ quoteId }: { quoteId: string }) {
    * más.
    */
   async function duplicate() {
+    if (busy) return;
     setBusy(true);
     setActionError(null);
     try {
-      const copy = await crmApi.duplicateQuote(quoteId);
+      const copy = await crmApi.duplicateQuote(quoteId, {
+        idempotencyKey: idem.keyFor({ duplicate: quoteId }),
+      });
+      idem.renew();
       router.push(`/cotizaciones/${copy.id}`);
     } catch (caught) {
       setActionError(
@@ -179,10 +186,16 @@ export function CotizacionView({ quoteId }: { quoteId: string }) {
    * anticipo, y volver al listado para buscarla sería un paso de más.
    */
   async function accept(paymentDueDate?: string) {
+    if (busy) return;
     setBusy(true);
     setActionError(null);
     try {
-      const result = await crmApi.acceptQuote(quoteId, { paymentDueDate });
+      const result = await crmApi.acceptQuote(
+        quoteId,
+        { paymentDueDate },
+        { idempotencyKey: idem.keyFor({ accept: quoteId, paymentDueDate }) },
+      );
+      idem.renew();
       // `A5` · el resultado del correo se perdía al navegar. Viaja como código
       // de estado, nunca con los destinatarios: son datos personales y no van
       // en una barra de direcciones.
@@ -1267,16 +1280,23 @@ function SendModal({
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // El correo no sale dos veces por un doble clic o por reintentar tras un corte.
+  const idem = useIdempotencyKey();
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
+    if (submitting) return;
     setSubmitting(true);
     setError(null);
     try {
-      const result = await crmApi.sendQuote(quote.id, {
+      const input = {
         to: to.split(",").map((address) => address.trim()).filter(Boolean),
         message: message.trim() || undefined,
+      };
+      const result = await crmApi.sendQuote(quote.id, input, {
+        idempotencyKey: idem.keyFor({ quote: quote.id, ...input }),
       });
+      idem.renew();
       onSent(result.quote, result.recipients, result.simulated);
     } catch (caught) {
       // El backend deja la cotización como estaba si el correo no salió.

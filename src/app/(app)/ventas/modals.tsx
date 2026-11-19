@@ -29,6 +29,7 @@ import {
   type PaymentKind,
   type QuoteType,
 } from "@/lib/domain/enums";
+import { useIdempotencyKey } from "@/lib/hooks/useIdempotencyKey";
 
 /** Lo que acepta el backend para un archivo adjunto · DM-05. */
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
@@ -69,6 +70,12 @@ export function RegistrarPagoModal({
   const [receipt, setReceipt] = useState<File | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /*
+   * El abono es dinero: un doble clic, o reintentar después de "el servidor no
+   * respondió a tiempo" cuando en realidad sí lo registró, no puede dejar dos
+   * asientos ni dos comprobantes REC-NNNN.
+   */
+  const idem = useIdempotencyKey();
 
   // El catálogo se pide una vez: son media docena de opciones que casi nunca
   // cambian, y "Sin especificar" existe solo para los abonos viejos, así que no
@@ -111,7 +118,7 @@ export function RegistrarPagoModal({
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    if (!validAmount || exceedsBalance || fileRejected || !methodId) return;
+    if (!validAmount || exceedsBalance || fileRejected || !methodId || submitting) return;
 
     setSubmitting(true);
     setError(null);
@@ -121,11 +128,14 @@ export function RegistrarPagoModal({
     let warning: string | undefined;
     if (receipt) {
       try {
-        const stored = await crmApi.uploadFile(receipt, {
+        const params = {
           clientId: sale.client?.id ?? "",
-          fileType: "payment_receipt",
+          fileType: "payment_receipt" as const,
           relatedEntityId: sale.id,
-          relatedEntityType: "sale",
+          relatedEntityType: "sale" as const,
+        };
+        const stored = await crmApi.uploadFile(receipt, params, {
+          idempotencyKey: idem.keyFor({ receipt, ...params }),
         });
         receiptFileId = stored.id;
       } catch {
@@ -135,14 +145,18 @@ export function RegistrarPagoModal({
     }
 
     try {
-      const updated = await crmApi.registerPayment(sale.id, {
+      const input = {
         amount: trimmed,
         kind: effectiveKind,
         methodId: methodId || undefined,
         paidAt,
         receiptFileId,
         notes: notes.trim() || undefined,
+      };
+      const updated = await crmApi.registerPayment(sale.id, input, {
+        idempotencyKey: idem.keyFor({ sale: sale.id, ...input }),
       });
+      idem.renew();
       onRegistered(updated, warning);
     } catch (caught) {
       setError(
@@ -477,13 +491,20 @@ export function AnularAbonoModal({
   const balanceAfter = fromCents(
     toCents(sale.balanceAmount) + toCents(payment.amount),
   );
+  const idem = useIdempotencyKey();
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
+    if (submitting) return;
     setSubmitting(true);
     setError(null);
     try {
-      onVoided(await crmApi.voidPayment(sale.id, payment.id, reason.trim()));
+      const why = reason.trim();
+      const updated = await crmApi.voidPayment(sale.id, payment.id, why, {
+        idempotencyKey: idem.keyFor({ sale: sale.id, payment: payment.id, why }),
+      });
+      idem.renew();
+      onVoided(updated);
     } catch (caught) {
       setError(
         caught instanceof ApiError ? caught.message : "No se pudo anular el abono.",
@@ -587,20 +608,25 @@ export function ReenviarConfirmacionModal({
     .map((address) => address.trim())
     .filter(Boolean);
   const malformed = recipients.filter((address) => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(address));
+  // El correo no sale dos veces por un doble clic o por reintentar tras un corte.
+  const idem = useIdempotencyKey();
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    if (malformed.length > 0) return;
+    if (malformed.length > 0 || submitting) return;
 
     setSubmitting(true);
     setError(null);
     try {
-      onSent(
-        await crmApi.sendSaleConfirmation(sale.id, {
-          to: recipients.length > 0 ? recipients : undefined,
-          message: message.trim() || undefined,
-        }),
-      );
+      const input = {
+        to: recipients.length > 0 ? recipients : undefined,
+        message: message.trim() || undefined,
+      };
+      const result = await crmApi.sendSaleConfirmation(sale.id, input, {
+        idempotencyKey: idem.keyFor({ sale: sale.id, ...input }),
+      });
+      idem.renew();
+      onSent(result);
     } catch (caught) {
       setError(
         caught instanceof ApiError ? caught.message : "No se pudo enviar la confirmación.",
@@ -703,13 +729,20 @@ export function AnularFacturaModal({
   const [reason, setReason] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const idem = useIdempotencyKey();
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
+    if (submitting) return;
     setSubmitting(true);
     setError(null);
     try {
-      onVoided(await crmApi.voidInvoice(sale.id, reason.trim()));
+      const why = reason.trim();
+      const updated = await crmApi.voidInvoice(sale.id, why, {
+        idempotencyKey: idem.keyFor({ voidInvoice: sale.id, why }),
+      });
+      idem.renew();
+      onVoided(updated);
     } catch (caught) {
       setError(
         caught instanceof ApiError ? caught.message : "No se pudo anular la factura.",

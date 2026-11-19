@@ -21,6 +21,7 @@ import {
   type ServiceType,
   type SupplierType,
 } from "@/lib/domain/enums";
+import { useIdempotencyKey } from "@/lib/hooks/useIdempotencyKey";
 
 /** "a, b , c" → ["a", "b", "c"] sin vacíos ni repetidos. */
 function splitList(value: string): string[] {
@@ -61,6 +62,7 @@ export function SupplierFormModal({
   const [internalNotes, setInternalNotes] = useState(supplier?.internalNotes ?? "");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const idem = useIdempotencyKey();
 
   // Espejo de las reglas del backend, para no gastar un viaje en un error
   // evitable. El servidor las vuelve a comprobar igual.
@@ -78,6 +80,7 @@ export function SupplierFormModal({
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
+    if (submitting) return;
     setSubmitting(true);
     setError(null);
 
@@ -109,7 +112,12 @@ export function SupplierFormModal({
               defaultCommission: payload.defaultCommission,
               internalNotes: payload.internalNotes,
             })
-          : await crmApi.createSupplier(payload),
+          : await crmApi
+              .createSupplier(payload, { idempotencyKey: idem.keyFor(payload) })
+              .then((created) => {
+                idem.renew();
+                return created;
+              }),
       );
     } catch (caught) {
       // El backend explica los duplicados nombrando al proveedor existente.

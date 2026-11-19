@@ -1048,12 +1048,23 @@ export type ConversationCounts = {
 
 async function authed<T>(
   path: string,
-  options: { method?: "GET" | "POST" | "PATCH" | "DELETE"; body?: unknown } = {},
+  options: {
+    method?: "GET" | "POST" | "PATCH" | "DELETE";
+    body?: unknown;
+    idempotencyKey?: string;
+    timeoutMs?: number;
+  } = {},
 ): Promise<T> {
   const token = await getIdToken();
   if (!token) throw new Error("La sesión expiró. Volvé a iniciar sesión.");
   return apiRequest<T>(path, { ...options, token });
 }
+
+/**
+ * Opciones de una acción que crea o envía algo. `idempotencyKey` sale de
+ * `useIdempotencyKey`: con ella un doble clic o un reintento no la duplica.
+ */
+export type MutationOptions = { idempotencyKey?: string };
 
 /** Descarta los filtros vacíos para no ensuciar la URL ni la caché. */
 function toQuery(filters: Record<string, unknown>): string {
@@ -1125,8 +1136,8 @@ export const crmApi = {
 
   activity: (id: string) => authed<ActivityEvent[]>(`/clients/${id}/activity`),
 
-  createClient: (input: CreateClientInput) =>
-    authed<ClientDetail>("/clients", { method: "POST", body: input }),
+  createClient: (input: CreateClientInput, opts: MutationOptions = {}) =>
+    authed<ClientDetail>("/clients", { method: "POST", body: input, ...opts }),
 
   updateClient: (id: string, input: UpdateClientInput) =>
     authed<ClientDetail>(`/clients/${id}`, { method: "PATCH", body: input }),
@@ -1162,8 +1173,11 @@ export const crmApi = {
    * La fecha del contacto la pone el servidor. `nextFollowUpAt` es opcional:
    * omitirlo deja la próxima acción como está, `null` la borra.
    */
-  logContact: (id: string, input: { note?: string; nextFollowUpAt?: string | null }) =>
-    authed<ClientDetail>(`/clients/${id}/contacto`, { method: "POST", body: input }),
+  logContact: (
+    id: string,
+    input: { note?: string; nextFollowUpAt?: string | null },
+    opts: MutationOptions = {},
+  ) => authed<ClientDetail>(`/clients/${id}/contacto`, { method: "POST", body: input, ...opts }),
 
   /**
    * Tomar un prospecto sin dueño · HU-CLI-04.
@@ -1211,10 +1225,11 @@ export const crmApi = {
    * Fusiona `sourceClientId` en `targetId`, que es el que queda. Solo Gerente y
    * Administrador; no se deshace.
    */
-  mergeClients: (targetId: string, sourceClientId: string) =>
+  mergeClients: (targetId: string, sourceClientId: string, opts: MutationOptions = {}) =>
     authed<ClientDetail>(`/clients/${targetId}/fusionar`, {
       method: "POST",
       body: { sourceClientId },
+      ...opts,
     }),
 
   /* ── Proveedores · HU-PRO-01 a HU-PRO-05 ─────────────────────────────────── */
@@ -1226,8 +1241,8 @@ export const crmApi = {
 
   supplierUsage: (id: string) => authed<SupplierUsage>(`/suppliers/${id}/usage`),
 
-  createSupplier: (input: SupplierInput) =>
-    authed<Supplier>("/suppliers", { method: "POST", body: input }),
+  createSupplier: (input: SupplierInput, opts: MutationOptions = {}) =>
+    authed<Supplier>("/suppliers", { method: "POST", body: input, ...opts }),
 
   /** El tipo no viaja: no se edita una vez registrado. */
   updateSupplier: (id: string, input: Omit<Partial<SupplierInput>, "type">) =>
@@ -1258,8 +1273,8 @@ export const crmApi = {
   /** Historial completo; la vigente es la de mayor número (HU-COT-11). */
   quoteVersions: (id: string) => authed<QuoteVersionData[]>(`/quotes/${id}/versions`),
 
-  createQuote: (input: QuoteInput) =>
-    authed<QuoteDetail>("/quotes", { method: "POST", body: input }),
+  createQuote: (input: QuoteInput, opts: MutationOptions = {}) =>
+    authed<QuoteDetail>("/quotes", { method: "POST", body: input, ...opts }),
 
   /**
    * En borrador corrige la versión vigente; enviada, genera una nueva.
@@ -1268,8 +1283,8 @@ export const crmApi = {
    * el backend la respeta: sin ella no había forma de borrar unas condiciones y
    * cada versión nueva salía con el texto viejo pegado.
    */
-  updateQuote: (id: string, input: QuoteUpdateInput) =>
-    authed<QuoteDetail>(`/quotes/${id}`, { method: "PATCH", body: input }),
+  updateQuote: (id: string, input: QuoteUpdateInput, opts: MutationOptions = {}) =>
+    authed<QuoteDetail>(`/quotes/${id}`, { method: "PATCH", body: input, ...opts }),
 
   /**
    * El motivo CATALOGADO es obligatorio al rechazar y al descartar.
@@ -1287,8 +1302,8 @@ export const crmApi = {
     }),
 
   /** Copia la versión vigente en un borrador nuevo, con código propio. */
-  duplicateQuote: (id: string) =>
-    authed<QuoteDetail>(`/quotes/${id}/duplicar`, { method: "POST" }),
+  duplicateQuote: (id: string, opts: MutationOptions = {}) =>
+    authed<QuoteDetail>(`/quotes/${id}/duplicar`, { method: "POST", ...opts }),
 
   /**
    * Contenido del archivo, servido por el API · HU-ARC-02.
@@ -1310,10 +1325,15 @@ export const crmApi = {
     }),
 
   /** Genera el PDF y lo manda; el estado avanza solo si el correo salió. */
-  sendQuote: (id: string, input: { to?: string[]; message?: string } = {}) =>
+  sendQuote: (
+    id: string,
+    input: { to?: string[]; message?: string } = {},
+    opts: MutationOptions = {},
+  ) =>
     authed<{ quote: QuoteDetail; recipients: string[]; simulated: boolean }>(
       `/quotes/${id}/send`,
-      { method: "POST", body: input },
+      // Genera el PDF y llama al proveedor de correo: 15 s se quedan cortos.
+      { method: "POST", body: input, timeoutMs: 60_000, ...opts },
     ),
 
   /* ── Ventas y cobros · HU-VEN-01 a HU-VEN-08 ─────────────────────────────── */
@@ -1341,18 +1361,29 @@ export const crmApi = {
   },
 
   /** Crea UNA venta ligada a la versión aceptada (HU-VEN-02). */
-  acceptQuote: (quoteId: string, input: { paymentDueDate?: string } = {}) =>
+  acceptQuote: (
+    quoteId: string,
+    input: { paymentDueDate?: string } = {},
+    opts: MutationOptions = {},
+  ) =>
     authed<SaleWithConfirmation>(`/quotes/${quoteId}/accept`, {
       method: "POST",
       body: input,
+      timeoutMs: 60_000,
+      ...opts,
     }),
 
-  createSale: (input: CreateSaleInput) =>
-    authed<SaleWithConfirmation>("/sales", { method: "POST", body: input }),
+  createSale: (input: CreateSaleInput, opts: MutationOptions = {}) =>
+    authed<SaleWithConfirmation>("/sales", {
+      method: "POST",
+      body: input,
+      timeoutMs: 60_000,
+      ...opts,
+    }),
 
   /** El backend recalcula saldo y emite el comprobante REC-NNNN. */
-  registerPayment: (id: string, input: RegisterPaymentInput) =>
-    authed<SaleDetail>(`/sales/${id}/payments`, { method: "POST", body: input }),
+  registerPayment: (id: string, input: RegisterPaymentInput, opts: MutationOptions = {}) =>
+    authed<SaleDetail>(`/sales/${id}/payments`, { method: "POST", body: input, ...opts }),
 
   /** Corregir destino, fechas de viaje y fecha límite · `B3`. */
   updateSale: (
@@ -1373,27 +1404,30 @@ export const crmApi = {
     }),
 
   /** Dejar constancia de una gestión de cobro · agenda de cobro. */
-  logCollectionContact: (id: string, note?: string) =>
+  logCollectionContact: (id: string, note?: string, opts: MutationOptions = {}) =>
     authed<SaleDetail>(`/sales/${id}/gestion-cobro`, {
       method: "POST",
       body: { note },
+      ...opts,
     }),
 
   /** Historial append-only de la venta · `G5`. */
   saleActivity: (id: string) => authed<SaleActivity[]>(`/sales/${id}/activity`),
 
   /** Anular la factura interna · DM-20. Gerente o Administrador. */
-  voidInvoice: (id: string, reason: string) =>
+  voidInvoice: (id: string, reason: string, opts: MutationOptions = {}) =>
     authed<SaleDetail>(`/sales/${id}/invoice/anular`, {
       method: "POST",
       body: { reason },
+      ...opts,
     }),
 
   /** Anular un abono · DM-15. Gerente o Administrador. */
-  voidPayment: (id: string, paymentId: string, reason: string) =>
+  voidPayment: (id: string, paymentId: string, reason: string, opts: MutationOptions = {}) =>
     authed<SaleDetail>(`/sales/${id}/payments/${paymentId}/anular`, {
       method: "POST",
       body: { reason },
+      ...opts,
     }),
 
   changeSaleStatus: (id: string, status: SaleStatus, reason?: string) =>
@@ -1403,13 +1437,19 @@ export const crmApi = {
     }),
 
   /** Correlativo permanente: solo se emite una vez por venta (DV-11). */
-  issueInvoice: (id: string) =>
-    authed<SaleDetail>(`/sales/${id}/invoice`, { method: "POST" }),
+  issueInvoice: (id: string, opts: MutationOptions = {}) =>
+    authed<SaleDetail>(`/sales/${id}/invoice`, { method: "POST", ...opts }),
 
-  sendSaleConfirmation: (id: string, input: { to?: string[]; message?: string } = {}) =>
+  sendSaleConfirmation: (
+    id: string,
+    input: { to?: string[]; message?: string } = {},
+    opts: MutationOptions = {},
+  ) =>
     authed<SaleWithConfirmation>(`/sales/${id}/confirmation`, {
       method: "POST",
       body: input,
+      timeoutMs: 60_000,
+      ...opts,
     }),
 
   /* ── Archivos · HU-ARC-01 y HU-ARC-02 ────────────────────────────────────── */
@@ -1423,6 +1463,13 @@ export const crmApi = {
       `/files/${id}/url`,
     ),
 
+  /**
+   * Cambia el nombre visible y de descarga. La extensión la conserva el
+   * backend: se manda solo el nombre, sin ella.
+   */
+  renameFile: (id: string, name: string) =>
+    authed<StoredFileRef>(`/files/${id}`, { method: "PATCH", body: { name } }),
+
   /** PDF, JPG o PNG · máximo 10 MB. El backend vuelve a validarlo. */
   uploadFile: async (
     file: File,
@@ -1432,10 +1479,18 @@ export const crmApi = {
       relatedEntityId?: string;
       relatedEntityType?: "quoteVersion" | "sale" | "other";
     },
+    opts: MutationOptions = {},
   ) => {
     const token = await getIdToken();
     if (!token) throw new Error("La sesión expiró. Volvé a iniciar sesión.");
-    return apiUpload<StoredFileRef>(`/files${toQuery(params)}`, file, token);
+    return apiUpload<StoredFileRef>(
+      `/files${toQuery(params)}`,
+      file,
+      token,
+      undefined,
+      {},
+      opts.idempotencyKey,
+    );
   },
 
   /* ── Dashboard · HU-DAS-01, HU-DAS-02 y HU-DAS-07 ────────────────────────── */
@@ -1506,10 +1561,11 @@ export const crmApi = {
    * porque un rechazo de Meta es parte del historial y no un error de la
    * petición. Fuera de la ventana de 24 h responde 409 (HU-MSG-12).
    */
-  sendConversationMessage: (id: string, text: string) =>
+  sendConversationMessage: (id: string, text: string, opts: MutationOptions = {}) =>
     authed<InboxMessage>(`/conversations/${id}/messages`, {
       method: "POST",
       body: { text },
+      ...opts,
     }),
 
   /**
@@ -1519,17 +1575,25 @@ export const crmApi = {
    * Solo WhatsApp y solo con la ventana abierta: fuera de ella responde 409.
    * Si Meta lo acepta, la cotización queda como enviada.
    */
-  shareQuote: (id: string, quoteId: string, message?: string) =>
+  shareQuote: (id: string, quoteId: string, message?: string, opts: MutationOptions = {}) =>
     authed<InboxMessage>(`/conversations/${id}/cotizacion`, {
       method: "POST",
       body: { quoteId, ...(message ? { message } : {}) },
+      // Regenera el PDF y lo sube a Meta antes de responder.
+      timeoutMs: 60_000,
+      ...opts,
     }),
 
   /**
    * Foto o archivo por el hilo. Igual que el texto, un 201 no garantiza la
    * entrega: un rechazo de Meta vuelve como mensaje `failed`.
    */
-  sendConversationAttachment: async (id: string, file: File, caption?: string) => {
+  sendConversationAttachment: async (
+    id: string,
+    file: File,
+    caption?: string,
+    opts: MutationOptions = {},
+  ) => {
     const token = await getIdToken();
     if (!token) throw new Error("La sesión expiró. Volvé a iniciar sesión.");
     return apiUpload<InboxMessage>(
@@ -1538,6 +1602,7 @@ export const crmApi = {
       token,
       60_000,
       caption ? { caption } : {},
+      opts.idempotencyKey,
     );
   },
 
@@ -1552,10 +1617,16 @@ export const crmApi = {
    * Igual que la respuesta libre, puede volver con `failed` y su motivo: un
    * rechazo de Meta es parte del historial, no un error de la petición.
    */
-  sendConversationTemplate: (id: string, templateId: string, values: string[]) =>
+  sendConversationTemplate: (
+    id: string,
+    templateId: string,
+    values: string[],
+    opts: MutationOptions = {},
+  ) =>
     authed<InboxMessage>(`/conversations/${id}/plantilla`, {
       method: "POST",
       body: { templateId, values },
+      ...opts,
     }),
   /* ── Reportes · HU-REP-01 a HU-REP-06 ────────────────────────────────────── */
 
@@ -1628,14 +1699,18 @@ export const crmApi = {
   },
 
   /** Reasignar o etiquetar varios expedientes · `F3`, HU-CLI-04. */
-  bulkUpdateClients: (input: {
-    clientIds: string[];
-    advisorId?: string | null;
-    addTagIds?: string[];
-  }) =>
+  bulkUpdateClients: (
+    input: {
+      clientIds: string[];
+      advisorId?: string | null;
+      addTagIds?: string[];
+    },
+    opts: MutationOptions = {},
+  ) =>
     authed<{ applied: number; skipped: number; total: number }>("/clients/lote", {
       method: "POST",
       body: input,
+      ...opts,
     }),
 };
 

@@ -35,6 +35,7 @@ import {
   type Channel,
 } from "@/lib/domain/enums";
 import { useDebouncedValue } from "@/lib/hooks/useDebouncedValue";
+import { useIdempotencyKey } from "@/lib/hooks/useIdempotencyKey";
 import { usePolling } from "@/lib/hooks/usePolling";
 import { useThreadScroll } from "@/lib/hooks/useThreadScroll";
 import {
@@ -1396,6 +1397,9 @@ function Composer({
   const [sharingQuote, setSharingQuote] = useState(false);
   const [attachment, setAttachment] = useState<File | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  // Un Enter repetido o un reintento tras "no respondió a tiempo" no manda el
+  // mismo texto dos veces al cliente: el backend devuelve el primer envío.
+  const idem = useIdempotencyKey();
 
   const canSend = replyWindow.open && text.trim().length > 0 && !sending;
 
@@ -1419,7 +1423,11 @@ function Composer({
     setSending(true);
     setError(null);
     try {
-      const message = await crmApi.sendConversationMessage(conversation.id, text.trim());
+      const body = text.trim();
+      const message = await crmApi.sendConversationMessage(conversation.id, body, {
+        idempotencyKey: idem.keyFor({ conversation: conversation.id, text: body }),
+      });
+      idem.renew();
       setText("");
       onSent(message);
       if (message.deliveryStatus === "failed") {
@@ -1659,6 +1667,7 @@ function AttachmentSender({
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const idem = useIdempotencyKey();
 
   const image = file.type === "image/jpeg" || file.type === "image/png";
   const whatsapp = channel === "whatsapp";
@@ -1671,16 +1680,16 @@ function AttachmentSender({
   }, [file, image]);
 
   async function send() {
+    if (sending) return;
     setSending(true);
     setError(null);
     try {
-      onSent(
-        await crmApi.sendConversationAttachment(
-          conversationId,
-          file,
-          whatsapp ? caption.trim() || undefined : undefined,
-        ),
-      );
+      const text = whatsapp ? caption.trim() || undefined : undefined;
+      const message = await crmApi.sendConversationAttachment(conversationId, file, text, {
+        idempotencyKey: idem.keyFor({ conversation: conversationId, file, caption: text }),
+      });
+      idem.renew();
+      onSent(message);
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : "No se pudo enviar el archivo.");
       setSending(false);
@@ -1806,13 +1815,19 @@ function QuoteSharer({
   }, [clientId]);
 
   const selected = quotes?.find((quote) => quote.id === selectedId) ?? null;
+  const idem = useIdempotencyKey();
 
   async function share() {
     if (!selected || sending) return;
     setSending(true);
     setError(null);
     try {
-      onSent(await crmApi.shareQuote(conversationId, selected.id, message.trim() || undefined));
+      const note = message.trim() || undefined;
+      const sent = await crmApi.shareQuote(conversationId, selected.id, note, {
+        idempotencyKey: idem.keyFor({ conversation: conversationId, quote: selected.id, note }),
+      });
+      idem.renew();
+      onSent(sent);
     } catch (caught) {
       setError(
         caught instanceof ApiError
@@ -1983,19 +1998,19 @@ function TemplatePicker({
 
   const selected = templates?.find((template) => template.id === selectedId) ?? null;
   const complete = Boolean(selected) && values.every((value) => value.trim().length > 0);
+  const idem = useIdempotencyKey();
 
   async function send() {
     if (!selected || !complete || sending) return;
     setSending(true);
     setError(null);
     try {
-      onSent(
-        await crmApi.sendConversationTemplate(
-          conversationId,
-          selected.id,
-          values.map((value) => value.trim()),
-        ),
-      );
+      const filled = values.map((value) => value.trim());
+      const sent = await crmApi.sendConversationTemplate(conversationId, selected.id, filled, {
+        idempotencyKey: idem.keyFor({ conversation: conversationId, template: selected.id, filled }),
+      });
+      idem.renew();
+      onSent(sent);
     } catch (caught) {
       setError(
         caught instanceof ApiError
