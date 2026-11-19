@@ -862,6 +862,7 @@ const FIELD_LABEL: Record<string, string> = {
   moved: "Registros movidos",
   sourceChannel: "Canal de origen",
   status: "Estado",
+  fileName: "Archivo",
 };
 
 /**

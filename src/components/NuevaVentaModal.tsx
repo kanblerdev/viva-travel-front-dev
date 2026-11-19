@@ -23,6 +23,7 @@ import {
   type CommissionMode,
   type QuoteType,
 } from "@/lib/domain/enums";
+import { useIdempotencyKey } from "@/lib/hooks/useIdempotencyKey";
 import { DialogTitle, todayLocal } from "@/components/DialogTitle";
 
 /*
@@ -91,6 +92,8 @@ export function NuevaVentaModal({
   const [client, setClient] = useState<ClientSummary | null>(null);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  // Un doble clic o un reintento tras un corte no registra dos ventas.
+  const idem = useIdempotencyKey();
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -200,12 +203,12 @@ export function NuevaVentaModal({
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    if (blocked) return;
+    if (blocked || submitting) return;
 
     setSubmitting(true);
     setError(null);
     try {
-      const result = await crmApi.createSale({
+      const input = {
         clientId: draft.clientId,
         advisorId: draft.advisorId || undefined,
         quoteType: draft.quoteType,
@@ -223,7 +226,9 @@ export function NuevaVentaModal({
             ? { mode: draft.agencyMode, value: draft.agencyValue.trim() }
             : undefined,
         paymentDueDate: draft.paymentDueDate || undefined,
-      });
+      };
+      const result = await crmApi.createSale(input, { idempotencyKey: idem.keyFor(input) });
+      idem.renew();
       onCreated(result.sale, result.confirmation);
     } catch (caught) {
       setError(

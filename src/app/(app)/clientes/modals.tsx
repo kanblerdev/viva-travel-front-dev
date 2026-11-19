@@ -16,6 +16,7 @@ import {
   type TeamMember,
 } from "@/lib/api/crm";
 import { useDebouncedValue } from "@/lib/hooks/useDebouncedValue";
+import { useIdempotencyKey } from "@/lib/hooks/useIdempotencyKey";
 import {
   SOURCE_CHANNELS,
   SOURCE_CHANNEL_LABEL,
@@ -61,21 +62,26 @@ export function RegistrarContactoModal({
   const [error, setError] = useState<string | null>(null);
 
   const previous = client.nextFollowUpAt ? client.nextFollowUpAt.slice(0, 10) : "";
+  const idem = useIdempotencyKey();
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
+    if (submitting) return;
     setSubmitting(true);
     setError(null);
     try {
-      onDone(
-        await crmApi.logContact(client.id, {
-          note: note.trim() || undefined,
-          // Solo viaja si cambió: omitirlo deja la fecha como está, y `null` la borra.
-          ...(followUp === previous
-            ? {}
-            : { nextFollowUpAt: followUp ? new Date(followUp).toISOString() : null }),
-        }),
-      );
+      const input = {
+        note: note.trim() || undefined,
+        // Solo viaja si cambió: omitirlo deja la fecha como está, y `null` la borra.
+        ...(followUp === previous
+          ? {}
+          : { nextFollowUpAt: followUp ? new Date(followUp).toISOString() : null }),
+      };
+      const updated = await crmApi.logContact(client.id, input, {
+        idempotencyKey: idem.keyFor({ client: client.id, ...input }),
+      });
+      idem.renew();
+      onDone(updated);
     } catch (caught) {
       setError(
         caught instanceof ApiError ? caught.message : "No se pudo registrar el contacto.",
@@ -363,14 +369,17 @@ export function NewProspectModal({
   const hasContact = phone.trim() !== "" || email.trim() !== "";
 
   const duplicates = useProbeDuplicates({ fullName, phone, email });
+  // Un doble Enter o un reintento tras un corte no crea dos prospectos iguales.
+  const idem = useIdempotencyKey();
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
+    if (submitting) return;
     setSubmitting(true);
     setError(null);
     try {
       const listaDestinos = splitList(destinations);
-      await crmApi.createClient({
+      const input = {
         fullName,
         primaryPhone: phone.trim() || undefined,
         primaryEmail: email.trim() || undefined,
@@ -382,7 +391,9 @@ export function NewProspectModal({
           listaDestinos.length > 0 ? { destinations: listaDestinos } : undefined,
         estimatedValue: estimatedValue.trim() || undefined,
         internalNotes: notes.trim() || undefined,
-      });
+      };
+      await crmApi.createClient(input, { idempotencyKey: idem.keyFor(input) });
+      idem.renew();
       onCreated();
     } catch (caught) {
       setError(
@@ -739,13 +750,18 @@ export function MergeClientsModal({
 
   const target = keep === "current" ? current : candidate;
   const source = keep === "current" ? candidate : current;
+  const idem = useIdempotencyKey();
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
+    if (submitting) return;
     setSubmitting(true);
     setError(null);
     try {
-      await crmApi.mergeClients(target.id, source.id);
+      await crmApi.mergeClients(target.id, source.id, {
+        idempotencyKey: idem.keyFor({ target: target.id, source: source.id }),
+      });
+      idem.renew();
       onMerged(target.id);
     } catch (caught) {
       setError(caught instanceof ApiError ? caught.message : "No se pudo fusionar.");

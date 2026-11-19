@@ -26,6 +26,7 @@ import {
   manualSaleTransitions,
   type PaymentKind,
 } from "@/lib/domain/enums";
+import { useIdempotencyKey } from "@/lib/hooks/useIdempotencyKey";
 import {
   AnularAbonoModal,
   AnularFacturaModal,
@@ -68,6 +69,12 @@ export function VentaView({ saleId }: { saleId: string }) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /*
+   * Emitir la factura dos veces devolvía "ya tiene la factura" en el segundo
+   * clic aunque la primera hubiera salido bien. Con la clave, el segundo recibe
+   * la misma venta facturada.
+   */
+  const invoiceIdem = useIdempotencyKey();
   const [paying, setPaying] = useState(false);
   const [canceling, setCanceling] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -112,6 +119,7 @@ export function VentaView({ saleId }: { saleId: string }) {
 
   /** Envuelve una acción del encabezado con su estado de carga y su error. */
   async function run(action: () => Promise<SaleDetail>, success: string) {
+    if (busy) return;
     setBusy(true);
     setActionError(null);
     setNotice(null);
@@ -275,7 +283,15 @@ export function VentaView({ saleId }: { saleId: string }) {
               disabled={busy}
               onClick={() =>
                 void run(
-                  () => crmApi.issueInvoice(sale.id),
+                  () =>
+                    crmApi
+                      .issueInvoice(sale.id, {
+                        idempotencyKey: invoiceIdem.keyFor({ invoice: sale.id }),
+                      })
+                      .then((updated) => {
+                        invoiceIdem.renew();
+                        return updated;
+                      }),
                   "Factura interna emitida. Queda en los documentos de la venta.",
                 )
               }

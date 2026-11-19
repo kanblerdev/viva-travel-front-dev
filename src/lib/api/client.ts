@@ -31,6 +31,11 @@ type RequestOptions = {
   signal?: AbortSignal;
   /** Milisegundos antes de abandonar. Por defecto 15 s. */
   timeoutMs?: number;
+  /**
+   * Clave de idempotencia (`useIdempotencyKey`). Con ella, una petición
+   * repetida no se ejecuta dos veces: el backend devuelve la primera respuesta.
+   */
+  idempotencyKey?: string;
 };
 
 /**
@@ -44,7 +49,14 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 
 export async function apiRequest<T>(
   path: string,
-  { method = "GET", body, token, signal, timeoutMs = DEFAULT_TIMEOUT_MS }: RequestOptions = {},
+  {
+    method = "GET",
+    body,
+    token,
+    signal,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    idempotencyKey,
+  }: RequestOptions = {},
 ): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -58,6 +70,7 @@ export async function apiRequest<T>(
       headers: {
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
@@ -101,6 +114,7 @@ export async function apiUpload<T>(
   token: string,
   timeoutMs = 60_000,
   fields: Record<string, string> = {},
+  idempotencyKey?: string,
 ): Promise<T> {
   const form = new FormData();
   for (const [name, value] of Object.entries(fields)) form.append(name, value);
@@ -114,7 +128,10 @@ export async function apiUpload<T>(
     response = await fetch(`${API_URL}${path}`, {
       method: "POST",
       signal: controller.signal,
-      headers: { Authorization: `Bearer ${token}` },
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}),
+      },
       body: form,
     });
   } catch (error) {
