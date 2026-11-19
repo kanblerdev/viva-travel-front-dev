@@ -36,6 +36,7 @@ import {
 } from "@/lib/domain/enums";
 import { useDebouncedValue } from "@/lib/hooks/useDebouncedValue";
 import { usePolling } from "@/lib/hooks/usePolling";
+import { useThreadScroll } from "@/lib/hooks/useThreadScroll";
 import {
   AssignConversationModal,
   DeleteConversationModal,
@@ -595,6 +596,7 @@ function ConversationPanes({
   // Una vez que la persona pidió mensajes anteriores, "hay más" lo decide esa
   // paginación y no el refresco de la página más reciente.
   const loadedOlder = useRef(false);
+  const threadScroll = useThreadScroll(messages);
 
   /**
    * Refresco periódico: el detalle y la página más reciente de mensajes.
@@ -648,6 +650,7 @@ function ConversationPanes({
         beforeId: oldest.id,
       });
       loadedOlder.current = true;
+      threadScroll.keepPositionOnPrepend();
       setMessages((current) => mergeMessages(page.items, current));
       setHasMore(page.hasMore);
     } finally {
@@ -820,40 +823,51 @@ function ConversationPanes({
           </div>
         )}
 
-        <div className="thread-body" aria-live="polite">
-          {hasMore && (
-            <button
-              type="button"
-              className="btn ghost tiny"
-              style={{ alignSelf: "center" }}
-              disabled={loadingOlder}
-              onClick={() => void loadOlder()}
-            >
-              {loadingOlder ? "Cargando…" : "Ver mensajes anteriores"}
+        <div className="thread-body" aria-live="polite" ref={threadScroll.viewportRef}>
+          <div className="thread-content" ref={threadScroll.contentRef}>
+            {hasMore && (
+              <button
+                type="button"
+                className="btn ghost tiny"
+                style={{ alignSelf: "center" }}
+                disabled={loadingOlder}
+                onClick={() => void loadOlder()}
+              >
+                {loadingOlder ? "Cargando…" : "Ver mensajes anteriores"}
+              </button>
+            )}
+            {messages.length === 0 && <span className="thread-daysep">Sin mensajes todavía</span>}
+            {withDaySeparators(messages).map((entry) =>
+              entry.kind === "day" ? (
+                <span key={entry.key} className="thread-daysep">
+                  {entry.label}
+                </span>
+              ) : (
+                <MessageBubble
+                  key={entry.message.id}
+                  message={entry.message}
+                  canModerate={isManager && !deleted}
+                  onDelete={setDeletingMessage}
+                  onRestore={restoreMessage}
+                />
+              ),
+            )}
+          </div>
+          {threadScroll.hasNew && (
+            <button type="button" className="thread-new-message" onClick={threadScroll.toBottom}>
+              <Icon name="arrow-right" width={12} height={12} style={{ transform: "rotate(90deg)" }} />
+              Mensaje nuevo
             </button>
-          )}
-          {messages.length === 0 && <span className="thread-daysep">Sin mensajes todavía</span>}
-          {withDaySeparators(messages).map((entry) =>
-            entry.kind === "day" ? (
-              <span key={entry.key} className="thread-daysep">
-                {entry.label}
-              </span>
-            ) : (
-              <MessageBubble
-                key={entry.message.id}
-                message={entry.message}
-                canModerate={isManager && !deleted}
-                onDelete={setDeletingMessage}
-                onRestore={restoreMessage}
-              />
-            ),
           )}
         </div>
 
         {!deleted && (
           <Composer
             conversation={detail}
-            onSent={(message) => setMessages((current) => mergeMessages(current, [message]))}
+            onSent={(message) => {
+              threadScroll.revealNext();
+              setMessages((current) => mergeMessages(current, [message]));
+            }}
           />
         )}
       </div>
